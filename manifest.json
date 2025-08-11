@@ -1,0 +1,47 @@
+﻿{
+  "manifest_version": 3,
+  "name": "Chess FEN Extractor",
+  "description": "Extract FEN from Chess.com game",
+  "version": "1.0",
+  "permissions": [
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://www.chess.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.chess.com/*"
+      ],
+      "js": [
+        "lib/jquery-3.6.0.min.js",
+        "lib/jcanvas.min.js",
+        "content.js"
+      ]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "lib/stockfish.js",
+        "lib/jquery.js",
+        "inject.js"
+      ],
+      "matches": [
+        "https://www.chess.com/*"
+      ]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
+}

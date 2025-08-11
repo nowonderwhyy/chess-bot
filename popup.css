@@ -1,0 +1,52 @@
+body{
+    width: 400px;
+    height: 400px;
+    display: flex;
+    flex-direction: column;
+}
+
+span{
+    position: relative;
+    margin: 0 auto;
+}
+
+.level-container{
+    position: relative;
+    width: 100%;
+    height: fit-content;
+    display: flex;
+    flex-direction: column;
+}
+
+.title{
+    margin-top: 1em;
+    position: relative;
+    font-size: 1em;
+    font-weight: bold;
+    color: rgb(0, 0, 0);
+    text-align: center;
+}
+
+.level-choice{
+    position: relative;
+    width: 100%;
+    height: fit-content;
+    display: flex;
+    flex-direction: column;
+}
+
+.level-button{
+    position: relative;
+    width: 100%;
+    height: fit-content;
+    display: flex;
+    flex-direction: column;
+}
+
+.depthSettings{
+    position: relative;
+    width: 100%;
+    height: fit-content;
+    display: flex;
+    flex-direction: column;
+}

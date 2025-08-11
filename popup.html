@@ -1,0 +1,73 @@
+﻿<!doctype html>
+<html>
+    <head>
+        <title>Chess.com Analysis</title>
+        <link rel="stylesheet" href="./popup.css">
+    </head>
+    <body>
+        <span>Start a game on Chess.com and the bot will run automatically. It takes 5-10 seconds to initialise.</span>
+        <div class="level-container">
+            <div class="title">
+                <span>Choose a level (default is 8):</span>
+            </div>
+            <div class="level-choice">
+                <form id="myForm">
+                    <div class="level-choice-item">
+                        <input type="radio" name="level" value="1" id="level-1">
+                        <label for="level-1">Level 1: ~850 elo</label>
+                    </div>
+                    <div class="level-choice-item">
+                        <input type="radio" name="level" value="2" id="level-2">
+                        <label for="level-2">Level 2: ~950 elo</label>
+                    </div>
+                    <div class="level-choice-item">
+                        <input type="radio" name="level" value="3" id="level-3">
+                        <label for="level-3">Level 3: ~1050 elo</label>
+                    </div>
+                    <div class="level-choice-item">
+                        <input type="radio" name="level" value="4" id="level-4">
+                        <label for="level-4">Level 4: ~1250 elo</label>
+                    </div>
+                    <div class="level-choice-item">
+                        <input type="radio" name="level" value="5" id="level-5">
+                        <label for="level-5">Level 5: ~1700 elo</label>
+                    </div>
+                    <div class="level-choice-item">
+                        <input type="radio" name="level" value="6" id="level-6">
+                        <label for="level-6">Level 6: ~1900 elo</label>
+                    </div>
+                    <div class="level-choice-item">
+                        <input type="radio" name="level" value="7" id="level-7">
+                        <label for="level-7">Level 7: ~2000 elo</label>
+                    </div>
+                    <div class="level-choice-item">
+                        <input type="radio" name="level" value="8" id="level-8" checked> 
+                        <label for="level-8">Level 8: ~2250 elo</label>
+                    </div>
+                </form>
+            </div>
+            <div class="level-button">
+                <button id="set-level">Set</button>
+            </div>
+        </div>
+        <div class="depthSettings">
+            <!-- input for depth -->
+            <div class="title">
+                <span>Choose a mode:</span>
+            </div>
+            <div class="othersettings-choice">
+                <div class="othersettings-choice-item">
+                    <label for="depth-1">Fast (good for blitz)</label>
+                    <input type="radio" name="depth" value="1" id="depth-1" checked>
+
+                    <label for="depth-2">Slow (Stronger)</label>
+                    <input type="radio" name="depth" value="2" id="depth-2">
+
+                    <button id="set-depth">Set</button>
+                </div>
+            </div>
+        </div>
+    </body>
+    <script src="lib/jquery-3.6.0.min.js"></script>
+    <script src="popup.js"></script>
+</html>
