@@ -18,6 +18,8 @@ let autoDelayBaseMs = 150;
 let autoDelayJitterMs = 600;
 let lastFen = null; // Remember last known position so we can re-evaluate on mode changes
 let lastAutoMovedFen = null; // Avoid duplicate auto-moves on same position
+let selectedMultiPV = 1; // number of candidate lines
+let latestMultiPVLines = []; // cache of parsed multi PVs for current position
 async function loadStockfish() {
     // Charger le fichier Stockfish.js en tant que texte
     const response = await fetch(chrome.runtime.getURL('lib/stockfish.js'));
@@ -32,25 +34,45 @@ async function loadStockfish() {
 
     stockfish.postMessage('uci');
     // Load saved preferences before setting options
-    const { engineLevel = "8", engineMode = "1", engineThinkMs = 200, autoMove = false, autoMoveDelayBaseMs: storedBase = 150, autoMoveDelayJitterMs: storedJitter = 600 } = await new Promise((resolve) => {
+    const { engineLevel = "8", engineMode = "1", engineThinkMs = 200, engineMultiPV = 1, autoMove = false, autoMoveDelayBaseMs: storedBase = 150, autoMoveDelayJitterMs: storedJitter = 600 } = await new Promise((resolve) => {
         try {
-            chrome.storage.sync.get({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 }, (items) => resolve(items));
+            chrome.storage.sync.get({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 }, (items) => resolve(items));
         } catch (e) {
-            resolve({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 });
+            resolve({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 });
         }
     });
     // Clamp possible stored values to 0..20 range
     selectedLevel = String(Math.max(0, Math.min(20, parseInt(engineLevel, 10) || 8)));
     selectedMode = String(engineMode);
     selectedThinkMs = Math.max(200, Math.min(5000, parseInt(engineThinkMs, 10) || 200));
+    selectedMultiPV = Math.max(1, Math.min(5, parseInt(engineMultiPV, 10) || 1));
     autoMoveEnabled = Boolean(autoMove);
     autoDelayBaseMs = Math.max(0, Math.min(5000, parseInt(storedBase, 10) || 150));
     autoDelayJitterMs = Math.max(0, Math.min(20000, parseInt(storedJitter, 10) || 600));
     stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
-    console.log('[ChessBot] init settings:', { selectedLevel, selectedThinkMs, autoMoveEnabled, autoDelayBaseMs, autoDelayJitterMs });
+    stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
+    console.log('[ChessBot] init settings:', { selectedLevel, selectedThinkMs, selectedMultiPV, autoMoveEnabled, autoDelayBaseMs, autoDelayJitterMs });
 
     stockfish.onmessage = function (event) {
         const moveRaw = String(event.data || '');
+        // Parse MultiPV info lines: e.g., "info depth 20 seldepth 30 multipv 2 score cp 35 pv e2e4 e7e5 ..."
+        if (moveRaw.startsWith('info')) {
+            try {
+                const line = moveRaw;
+                const tokens = line.trim().split(/\s+/);
+                const idxMulti = tokens.indexOf('multipv');
+                const idxPv = tokens.indexOf('pv');
+                if (idxMulti > -1 && idxPv > -1 && idxPv + 1 < tokens.length) {
+                    const pvIndex = parseInt(tokens[idxMulti + 1], 10) || 1;
+                    const firstMove = tokens[idxPv + 1];
+                    // Store by pv index (1-based)
+                    if (firstMove && firstMove.length >= 4) {
+                        latestMultiPVLines[pvIndex - 1] = firstMove;
+                        drawMultiPVArrows();
+                    }
+                }
+            } catch (e) {}
+        }
         if (moveRaw.startsWith('bestmove')) {
             // Formats:
             // - "bestmove e2e4 ponder e7e5"
@@ -64,7 +86,11 @@ async function loadStockfish() {
 
             if (bestToken && bestToken !== '(none)' && bestToken.length >= 4) {
                 console.log('[ChessBot] bestmove:', bestToken);
-                drawBestMove(bestToken);
+                // On bestmove, ensure we have at least one arrow; fallback to best if MultiPV info didn't arrive
+                if (!latestMultiPVLines[0]) {
+                    latestMultiPVLines[0] = bestToken;
+                }
+                drawMultiPVArrows();
                 if (autoMoveEnabled) {
                     tryAutoMove(bestToken);
                 }
@@ -176,6 +202,38 @@ function drawPonderMove(pondermove){
         x1: pf.width, y1: pf.height,
         x2: pt.width, y2: pt.height
     });
+}
+
+function drawMultiPVArrows() {
+    // Clear then draw arrows for up to selectedMultiPV lines using distinct colors
+    try { $("#canvas").clearCanvas(); } catch (e) {}
+    const colors = [
+        "rgba(24, 171, 219, 0.9)",   // blue for PV1
+        "rgba(46, 204, 113, 0.9)",  // green for PV2
+        "rgba(241, 196, 15, 0.9)",  // yellow for PV3
+        "rgba(155, 89, 182, 0.9)",  // purple for PV4
+        "rgba(230, 126, 34, 0.9)",  // orange for PV5
+    ];
+    for (let i = 0; i < Math.min(selectedMultiPV, latestMultiPVLines.length); i++) {
+        const move = latestMultiPVLines[i];
+        if (!move || move.length < 4) continue;
+        const moveFrom = move.substring(0, 2);
+        const moveTo = move.substring(2, 4);
+        const pf = point[moveFrom];
+        const pt = point[moveTo];
+        if (!pf || !pt) continue;
+        $("#canvas").drawLine({
+            strokeStyle: colors[i % colors.length],
+            strokeWidth: i === 0 ? 8 : 6,
+            rounded: true,
+            endArrow: true,
+            startArrow: false,
+            arrowRadius: 15,
+            arrowAngle: 45,
+            x1: pf.width, y1: pf.height,
+            x2: pt.width, y2: pt.height
+        });
+    }
 }
 
 function uciToSquares(uciMove) {
@@ -301,6 +359,9 @@ function processFEN(fen) {
 
     stockfish.postMessage('position fen ' + fen);
     // Use selected think time for search
+    // Reset cached PVs for this position
+    latestMultiPVLines = new Array(Math.max(1, selectedMultiPV));
+    stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
     stockfish.postMessage(`go movetime ${selectedThinkMs}`);
 }
 
@@ -388,20 +449,17 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         selectedLevel = String(Math.max(0, Math.min(20, parseInt(request.radioValue, 10) || 8)));
         console.log("Updating Stockfish level to:", selectedLevel);
         stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
-        try { chrome.storage.sync.set({ engineLevel: selectedLevel }); } catch (e) {}
     }
     if (request.type === 'set-mode') {
         // Legacy support: map Fast/Slow to 200ms/2000ms
         selectedMode = String(request.radioValue);
         selectedThinkMs = selectedMode === '2' ? 2000 : 200;
         console.log("Updating Stockfish think time (legacy mode) to:", selectedThinkMs, "ms");
-        try { chrome.storage.sync.set({ engineMode: selectedMode, engineThinkMs: selectedThinkMs }); } catch (e) {}
         if (lastFen) { processFEN(lastFen); }
     }
     if (request.type === 'set-think-time') {
         selectedThinkMs = Math.max(200, Math.min(5000, parseInt(request.radioValue, 10) || 200));
         console.log("Updating Stockfish think time to:", selectedThinkMs, "ms");
-        try { chrome.storage.sync.set({ engineThinkMs: selectedThinkMs }); } catch (e) {}
         if (lastFen) { processFEN(lastFen); }
     }
     if (request.type === 'set-auto-move') {
@@ -412,6 +470,12 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
             autoDelayJitterMs = Math.max(0, Math.min(20000, parseInt(items.autoMoveDelayJitterMs, 10) || 600));
             console.log("Auto-move:", autoMoveEnabled, "Base:", autoDelayBaseMs, "Jitter:", autoDelayJitterMs);
         });
-        try { chrome.storage.sync.set({ autoMove: autoMoveEnabled }); } catch (e) {}
+    }
+    if (request.type === 'set-multipv') {
+        const mpv = Math.max(1, Math.min(5, parseInt(request.value, 10) || 1));
+        selectedMultiPV = mpv;
+        console.log("Updating Stockfish MultiPV to:", selectedMultiPV);
+        stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
+        if (lastFen) { processFEN(lastFen); }
     }
 });

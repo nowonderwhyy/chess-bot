@@ -5,12 +5,15 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         request.type === 'set-level' ||
         request.type === 'set-mode' ||
         request.type === 'set-think-time' ||
-        request.type === 'set-auto-move'
+        request.type === 'set-auto-move' ||
+        request.type === 'set-multipv'
     )) {
-        chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-            if (tabs.length > 0) {
-                chrome.tabs.sendMessage(tabs[0].id, request);
-            }
-        });
+        try {
+            chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+                if (tabs && tabs.length > 0 && tabs[0] && tabs[0].id) {
+                    try { chrome.tabs.sendMessage(tabs[0].id, request); } catch (e) {}
+                }
+            });
+        } catch (e) {}
     }
 });

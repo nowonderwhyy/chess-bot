@@ -30,19 +30,21 @@ function estimateEloForLevel(levelNumber) {
     return table[lvl];
 }
 
-function updateCurrentStateUI(level, thinkMs) {
+function updateCurrentStateUI(level, thinkMs, multiPV) {
     const seconds = (Number(thinkMs) / 1000).toFixed(1);
     const elo = estimateEloForLevel(level);
     $("#current-level").text(level);
     $("#current-level-elo").text(`~${elo} Elo`);
     $("#current-mode").text(seconds + "s");
+    if (multiPV) { $("#current-multipv").text(String(multiPV)); }
 }
 
 function restoreSelections() {
-    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 }, function (items) {
-        const { engineLevel, engineThinkMs, autoMove, autoMoveDelayBaseMs, autoMoveDelayJitterMs } = items;
+    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 }, function (items) {
+        const { engineLevel, engineThinkMs, engineMultiPV, autoMove, autoMoveDelayBaseMs, autoMoveDelayJitterMs } = items;
         const clampedLevel = String(Math.max(0, Math.min(20, parseInt(engineLevel, 10) || 8)));
         const clampedMs = String(Math.max(200, Math.min(5000, parseInt(engineThinkMs, 10) || 200)));
+        const clampedMultiPV = String(Math.max(1, Math.min(5, parseInt(engineMultiPV, 10) || 1)));
         const clampedDelayBase = String(Math.max(0, Math.min(5000, parseInt(autoMoveDelayBaseMs, 10) || 150)));
         const clampedDelayJitter = String(Math.max(0, Math.min(20000, parseInt(autoMoveDelayJitterMs, 10) || 600)));
         $("#level-slider").val(clampedLevel);
@@ -50,12 +52,14 @@ function restoreSelections() {
         $("#level-elo").text(`~${estimateEloForLevel(clampedLevel)} Elo`);
         $("#time-slider").val(clampedMs);
         $("#time-slider-value").text((Number(clampedMs) / 1000).toFixed(1));
+        $("#multipv-slider").val(clampedMultiPV);
+        $("#multipv-slider-value").text(clampedMultiPV);
         $("#auto-move-checkbox").prop('checked', Boolean(autoMove));
         $("#auto-delay-base-slider").val(clampedDelayBase);
         $("#auto-delay-base-value").text(clampedDelayBase);
         $("#auto-delay-jitter-slider").val(clampedDelayJitter);
         $("#auto-delay-jitter-value").text(clampedDelayJitter);
-        updateCurrentStateUI(clampedLevel, clampedMs);
+        updateCurrentStateUI(clampedLevel, clampedMs, clampedMultiPV);
     });
 }
 
@@ -74,43 +78,64 @@ $(document).ready(function () {
         $("#time-slider-value").text((Number(ms) / 1000).toFixed(1));
     });
 
+    $("#multipv-slider").on("input change", function () {
+        const v = $(this).val();
+        $("#multipv-slider-value").text(String(v));
+    });
+
+    // Debounce helpers to reduce storage write rate and avoid message errors
+    function debounce(fn, wait) {
+        let t;
+        return function (...args) {
+            clearTimeout(t);
+            t = setTimeout(() => fn.apply(this, args), wait);
+        };
+    }
+    const debouncedSet = debounce((obj) => chrome.storage.sync.set(obj), 300);
+    const safeSend = (msg) => { try { chrome.runtime.sendMessage(msg); } catch (e) {} };
+
     $("#auto-delay-base-slider").on("input change", function () {
         const ms = $(this).val();
         $("#auto-delay-base-value").text(String(ms));
+        debouncedSet({ autoMoveDelayBaseMs: ms });
         const autoMove = $("#auto-move-checkbox").is(':checked');
-        chrome.storage.sync.set({ autoMoveDelayBaseMs: ms });
-        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove });
+        safeSend({ type: "set-auto-move", enabled: autoMove });
     });
     $("#auto-delay-jitter-slider").on("input change", function () {
         const ms = $(this).val();
         $("#auto-delay-jitter-value").text(String(ms));
+        debouncedSet({ autoMoveDelayJitterMs: ms });
         const autoMove = $("#auto-move-checkbox").is(':checked');
-        chrome.storage.sync.set({ autoMoveDelayJitterMs: ms });
-        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove });
+        safeSend({ type: "set-auto-move", enabled: autoMove });
     });
 
     $("#set-level").click(function () {
         const levelValue = $("#level-slider").val();
-        chrome.storage.sync.set({ engineLevel: levelValue });
-        updateCurrentStateUI(levelValue, $("#time-slider").val());
-        // Fire-and-forget; no response expected to avoid runtime.lastError
-        chrome.runtime.sendMessage({ type: "set-level", radioValue: levelValue });
+        debouncedSet({ engineLevel: levelValue });
+        updateCurrentStateUI(levelValue, $("#time-slider").val(), $("#multipv-slider").val());
+        safeSend({ type: "set-level", radioValue: levelValue });
     });
 
     $("#set-time").click(function () {
         const thinkMs = $("#time-slider").val();
-        chrome.storage.sync.set({ engineThinkMs: thinkMs });
-        updateCurrentStateUI($("#level-slider").val(), thinkMs);
-        // Fire-and-forget; no response expected to avoid runtime.lastError
-        chrome.runtime.sendMessage({ type: "set-think-time", radioValue: thinkMs });
+        debouncedSet({ engineThinkMs: thinkMs });
+        updateCurrentStateUI($("#level-slider").val(), thinkMs, $("#multipv-slider").val());
+        safeSend({ type: "set-think-time", radioValue: thinkMs });
+    });
+
+    $("#set-multipv").click(function () {
+        const mpv = $("#multipv-slider").val();
+        debouncedSet({ engineMultiPV: mpv });
+        updateCurrentStateUI($("#level-slider").val(), $("#time-slider").val(), mpv);
+        safeSend({ type: "set-multipv", value: mpv });
     });
 
     $("#set-auto-move").click(function () {
         const autoMove = $("#auto-move-checkbox").is(':checked');
         const base = $("#auto-delay-base-slider").val();
         const jitter = $("#auto-delay-jitter-slider").val();
-        chrome.storage.sync.set({ autoMove: autoMove, autoMoveDelayBaseMs: base, autoMoveDelayJitterMs: jitter });
-        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove });
+        debouncedSet({ autoMove: autoMove, autoMoveDelayBaseMs: base, autoMoveDelayJitterMs: jitter });
+        safeSend({ type: "set-auto-move", enabled: autoMove });
     });
 
     // Apply immediately when toggling checkbox
@@ -118,7 +143,7 @@ $(document).ready(function () {
         const autoMove = $(this).is(':checked');
         const base = $("#auto-delay-base-slider").val();
         const jitter = $("#auto-delay-jitter-slider").val();
-        chrome.storage.sync.set({ autoMove: autoMove });
-        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove });
+        debouncedSet({ autoMove: autoMove });
+        safeSend({ type: "set-auto-move", enabled: autoMove });
     });
 });

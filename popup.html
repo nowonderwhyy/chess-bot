@@ -7,7 +7,7 @@
     <body>
         <span>Start a game on Chess.com and the bot will run automatically. It takes 5-10 seconds to initialise.</span>
         <div class="current-state" style="margin: 8px 0; font-weight: 600;">
-            Current: Level <span id="current-level">8</span> (<span id="current-level-elo">~2250 Elo</span>), Think <span id="current-mode">0.2s</span>
+            Current: Level <span id="current-level">8</span> (<span id="current-level-elo">~2250 Elo</span>), Think <span id="current-mode">0.2s</span>, PVs <span id="current-multipv">1</span>
         </div>
         <div class="level-container">
             <div class="title">
@@ -21,6 +21,20 @@
             </div>
             <div class="level-button">
                 <button id="set-level">Set</button>
+            </div>
+        </div>
+        <div class="multiPVSettings" style="margin-top: 12px;">
+            <div class="title">
+                <span>MultiPV (number of candidate lines):</span>
+            </div>
+            <div class="othersettings-choice">
+                <div class="othersettings-choice-item" style="display: flex; flex-direction: column; gap: 8px;">
+                    <div style="text-align: center;">
+                        <span>Top <span id="multipv-slider-value">1</span> line(s) (1–5)</span>
+                    </div>
+                    <input type="range" min="1" max="5" step="1" id="multipv-slider" value="1" style="width: 100%;" />
+                    <button id="set-multipv">Set</button>
+                </div>
             </div>
         </div>
         <div class="depthSettings">
