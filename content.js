@@ -14,7 +14,8 @@ let selectedMode = "1"; // Legacy, kept for backward compat
 let selectedLevel = "8";
 let selectedThinkMs = 200; // default 200ms
 let autoMoveEnabled = false;
-let autoMoveDelayMs = 100;
+let autoDelayBaseMs = 150;
+let autoDelayJitterMs = 600;
 let lastFen = null; // Remember last known position so we can re-evaluate on mode changes
 let lastAutoMovedFen = null; // Avoid duplicate auto-moves on same position
 async function loadStockfish() {
@@ -31,11 +32,11 @@ async function loadStockfish() {
 
     stockfish.postMessage('uci');
     // Load saved preferences before setting options
-    const { engineLevel = "8", engineMode = "1", engineThinkMs = 200, autoMove = false, autoMoveDelayMs: storedDelay = 100 } = await new Promise((resolve) => {
+    const { engineLevel = "8", engineMode = "1", engineThinkMs = 200, autoMove = false, autoMoveDelayBaseMs: storedBase = 150, autoMoveDelayJitterMs: storedJitter = 600 } = await new Promise((resolve) => {
         try {
-            chrome.storage.sync.get({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, autoMove: false, autoMoveDelayMs: 100 }, (items) => resolve(items));
+            chrome.storage.sync.get({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 }, (items) => resolve(items));
         } catch (e) {
-            resolve({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, autoMove: false, autoMoveDelayMs: 100 });
+            resolve({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 });
         }
     });
     // Clamp possible stored values to 0..20 range
@@ -43,9 +44,10 @@ async function loadStockfish() {
     selectedMode = String(engineMode);
     selectedThinkMs = Math.max(200, Math.min(5000, parseInt(engineThinkMs, 10) || 200));
     autoMoveEnabled = Boolean(autoMove);
-    autoMoveDelayMs = Math.max(0, Math.min(1000, parseInt(storedDelay, 10) || 100));
+    autoDelayBaseMs = Math.max(0, Math.min(5000, parseInt(storedBase, 10) || 150));
+    autoDelayJitterMs = Math.max(0, Math.min(20000, parseInt(storedJitter, 10) || 600));
     stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
-    console.log('[ChessBot] init settings:', { selectedLevel, selectedThinkMs, autoMoveEnabled, autoMoveDelayMs });
+    console.log('[ChessBot] init settings:', { selectedLevel, selectedThinkMs, autoMoveEnabled, autoDelayBaseMs, autoDelayJitterMs });
 
     stockfish.onmessage = function (event) {
         const moveRaw = String(event.data || '');
@@ -270,11 +272,13 @@ function tryAutoMove(uciMove) {
     const active = getActiveColorFromFEN(lastFen);
     if (active !== lastPlayingAs) return;
 
-    const delay = Math.max(0, Number(autoMoveDelayMs) || 0);
+    const base = Math.max(0, Number(autoDelayBaseMs) || 0);
+    const margin = Math.max(0, Number(autoDelayJitterMs) || 0);
+    const delay = base + Math.floor(Math.random() * (margin + 1));
     // Prefer page-context executor via window message
     try {
         window.postMessage({ type: 'AUTO_MOVE', move: { from, to }, delayMs: delay }, '*');
-        console.log('[ChessBot] requested AUTO_MOVE', { from, to, delay });
+        console.log('[ChessBot] requested AUTO_MOVE', { from, to, delay, base, margin });
         lastAutoMovedFen = lastFen;
         return;
     } catch (e) {
@@ -402,8 +406,12 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     }
     if (request.type === 'set-auto-move') {
         autoMoveEnabled = Boolean(request.enabled);
-        autoMoveDelayMs = Math.max(0, Math.min(1000, parseInt(request.delayMs, 10) || 0));
-        try { chrome.storage.sync.set({ autoMove: autoMoveEnabled, autoMoveDelayMs: autoMoveDelayMs }); } catch (e) {}
-        console.log("Auto-move:", autoMoveEnabled, "Delay:", autoMoveDelayMs, "ms");
+        // Refresh base/jitter from storage on changes
+        chrome.storage.sync.get({ autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 }, (items) => {
+            autoDelayBaseMs = Math.max(0, Math.min(5000, parseInt(items.autoMoveDelayBaseMs, 10) || 150));
+            autoDelayJitterMs = Math.max(0, Math.min(20000, parseInt(items.autoMoveDelayJitterMs, 10) || 600));
+            console.log("Auto-move:", autoMoveEnabled, "Base:", autoDelayBaseMs, "Jitter:", autoDelayJitterMs);
+        });
+        try { chrome.storage.sync.set({ autoMove: autoMoveEnabled }); } catch (e) {}
     }
 });

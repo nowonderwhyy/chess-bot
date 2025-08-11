@@ -47,9 +47,14 @@
                     <span>Play best move automatically</span>
                 </label>
                 <div style="display: flex; align-items: center; gap: 8px;">
-                    <span>Delay:</span>
-                    <input type="range" min="0" max="1000" step="50" id="auto-delay-slider" value="100" style="flex: 1;" />
-                    <span><span id="auto-delay-value">100</span>ms</span>
+                    <span>Base delay:</span>
+                    <input type="range" min="0" max="1500" step="50" id="auto-delay-base-slider" value="150" style="flex: 1;" />
+                    <span><span id="auto-delay-base-value">150</span>ms</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>Random margin:</span>
+                    <input type="range" min="0" max="20000" step="100" id="auto-delay-jitter-slider" value="600" style="flex: 1;" />
+                    <span>±<span id="auto-delay-jitter-value">600</span>ms</span>
                 </div>
                 <button id="set-auto-move">Apply</button>
             </div>

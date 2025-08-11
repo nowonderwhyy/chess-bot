@@ -39,19 +39,22 @@ function updateCurrentStateUI(level, thinkMs) {
 }
 
 function restoreSelections() {
-    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, autoMove: false, autoMoveDelayMs: 100 }, function (items) {
-        const { engineLevel, engineThinkMs, autoMove, autoMoveDelayMs } = items;
+    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 }, function (items) {
+        const { engineLevel, engineThinkMs, autoMove, autoMoveDelayBaseMs, autoMoveDelayJitterMs } = items;
         const clampedLevel = String(Math.max(0, Math.min(20, parseInt(engineLevel, 10) || 8)));
         const clampedMs = String(Math.max(200, Math.min(5000, parseInt(engineThinkMs, 10) || 200)));
-        const clampedDelay = String(Math.max(0, Math.min(1000, parseInt(autoMoveDelayMs, 10) || 100)));
+        const clampedDelayBase = String(Math.max(0, Math.min(5000, parseInt(autoMoveDelayBaseMs, 10) || 150)));
+        const clampedDelayJitter = String(Math.max(0, Math.min(20000, parseInt(autoMoveDelayJitterMs, 10) || 600)));
         $("#level-slider").val(clampedLevel);
         $("#level-slider-value").text(clampedLevel);
         $("#level-elo").text(`~${estimateEloForLevel(clampedLevel)} Elo`);
         $("#time-slider").val(clampedMs);
         $("#time-slider-value").text((Number(clampedMs) / 1000).toFixed(1));
         $("#auto-move-checkbox").prop('checked', Boolean(autoMove));
-        $("#auto-delay-slider").val(clampedDelay);
-        $("#auto-delay-value").text(clampedDelay);
+        $("#auto-delay-base-slider").val(clampedDelayBase);
+        $("#auto-delay-base-value").text(clampedDelayBase);
+        $("#auto-delay-jitter-slider").val(clampedDelayJitter);
+        $("#auto-delay-jitter-value").text(clampedDelayJitter);
         updateCurrentStateUI(clampedLevel, clampedMs);
     });
 }
@@ -71,13 +74,19 @@ $(document).ready(function () {
         $("#time-slider-value").text((Number(ms) / 1000).toFixed(1));
     });
 
-    $("#auto-delay-slider").on("input change", function () {
+    $("#auto-delay-base-slider").on("input change", function () {
         const ms = $(this).val();
-        $("#auto-delay-value").text(String(ms));
-        // Live-apply delay when auto-move is enabled
+        $("#auto-delay-base-value").text(String(ms));
         const autoMove = $("#auto-move-checkbox").is(':checked');
-        chrome.storage.sync.set({ autoMoveDelayMs: ms });
-        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove, delayMs: Number(ms) });
+        chrome.storage.sync.set({ autoMoveDelayBaseMs: ms });
+        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove });
+    });
+    $("#auto-delay-jitter-slider").on("input change", function () {
+        const ms = $(this).val();
+        $("#auto-delay-jitter-value").text(String(ms));
+        const autoMove = $("#auto-move-checkbox").is(':checked');
+        chrome.storage.sync.set({ autoMoveDelayJitterMs: ms });
+        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove });
     });
 
     $("#set-level").click(function () {
@@ -98,16 +107,18 @@ $(document).ready(function () {
 
     $("#set-auto-move").click(function () {
         const autoMove = $("#auto-move-checkbox").is(':checked');
-        const autoDelay = $("#auto-delay-slider").val();
-        chrome.storage.sync.set({ autoMove: autoMove, autoMoveDelayMs: autoDelay });
-        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove, delayMs: Number(autoDelay) });
+        const base = $("#auto-delay-base-slider").val();
+        const jitter = $("#auto-delay-jitter-slider").val();
+        chrome.storage.sync.set({ autoMove: autoMove, autoMoveDelayBaseMs: base, autoMoveDelayJitterMs: jitter });
+        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove });
     });
 
     // Apply immediately when toggling checkbox
     $("#auto-move-checkbox").on('change', function () {
         const autoMove = $(this).is(':checked');
-        const autoDelay = $("#auto-delay-slider").val();
+        const base = $("#auto-delay-base-slider").val();
+        const jitter = $("#auto-delay-jitter-slider").val();
         chrome.storage.sync.set({ autoMove: autoMove });
-        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove, delayMs: Number(autoDelay) });
+        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove });
     });
 });
