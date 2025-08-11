@@ -19,6 +19,10 @@ let lastFen = null; // Remember last known position so we can re-evaluate on mod
 let lastAutoMovedFen = null; // Avoid duplicate auto-moves on same position
 let selectedMultiPV = 1; // number of candidate lines
 let latestMultiPVLines = []; // cache of parsed multi PVs for current position
+let lastDrawAt = 0; // throttle PV arrow draws
+let currentSearchToken = 0; // watchdog token for engine searches
+let bestmoveTimerId = null; // watchdog timer id
+let boardResizeObserver = null; // keep canvas aligned with board
 async function loadStockfish() {
     // Charger le fichier Stockfish.js en tant que texte
     const response = await fetch(chrome.runtime.getURL('lib/stockfish.js'));
@@ -89,6 +93,10 @@ async function loadStockfish() {
                     latestMultiPVLines[0] = bestToken;
                 }
                 drawMultiPVArrows();
+                // Clear watchdog since we received a bestmove
+                try {
+                    if (bestmoveTimerId) { clearTimeout(bestmoveTimerId); bestmoveTimerId = null; }
+                } catch (_) {}
                 if (autoMoveEnabled) {
                     tryAutoMove(bestToken);
                 }
@@ -100,6 +108,36 @@ async function loadStockfish() {
             }
         }
     };
+
+    // Auto-restart the engine on errors/message errors
+    const nowMs = () => Date.now();
+    let lastRestartAt = 0;
+    function restartEngineSafely() {
+        const since = nowMs() - lastRestartAt;
+        if (since < 1000) return; // throttle restarts
+        lastRestartAt = nowMs();
+        try { stockfish.terminate(); } catch (e) {}
+        stockfish = null;
+        loadStockfish().then(() => {
+            try {
+                // restore options
+                stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
+                stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
+                if (lastFen) {
+                    const active = getActiveColorFromFEN(lastFen);
+                    if (active == lastPlayingAs) {
+                        processFEN(lastFen);
+                    }
+                }
+            } catch (_) {}
+        });
+    }
+    try {
+        stockfish.addEventListener && stockfish.addEventListener('error', restartEngineSafely);
+        stockfish.addEventListener && stockfish.addEventListener('messageerror', restartEngineSafely);
+        stockfish.onerror = restartEngineSafely;
+        stockfish.onmessageerror = restartEngineSafely;
+    } catch (_) {}
 
     return stockfish;
 }
@@ -204,6 +242,9 @@ function drawPonderMove(pondermove){
 
 function drawMultiPVArrows() {
     // Clear then draw arrows for up to selectedMultiPV lines using distinct colors
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    if (now - lastDrawAt < 40) { return; }
+    lastDrawAt = now;
     try { $("#canvas").clearCanvas(); } catch (e) {}
     const colors = [
         "rgba(24, 171, 219, 0.9)",   // blue for PV1
@@ -364,6 +405,27 @@ function processFEN(fen) {
     latestMultiPVLines = new Array(Math.max(1, selectedMultiPV));
     stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
     stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+
+    // Watchdog: ensure we eventually get a bestmove; otherwise, retry this search
+    function clearBestmoveWatchdog() {
+        try { if (bestmoveTimerId) { clearTimeout(bestmoveTimerId); bestmoveTimerId = null; } } catch (_) {}
+    }
+    clearBestmoveWatchdog();
+    const thisToken = ++currentSearchToken;
+    const fenAtStart = fen;
+    bestmoveTimerId = setTimeout(() => {
+        if (thisToken !== currentSearchToken) return; // superseded
+        if (!lastFen || lastFen !== fenAtStart) return; // position changed
+        const active = getActiveColorFromFEN(lastFen);
+        if (active !== lastPlayingAs) return; // not our turn anymore
+        try {
+            console.warn('[ChessBot] bestmove watchdog triggered; retrying search');
+            stockfish.postMessage('stop');
+            stockfish.postMessage('position fen ' + lastFen);
+            stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
+            stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+        } catch (_) {}
+    }, Math.min(8000, Math.max(1000 + Number(selectedThinkMs) || 200, Number(selectedThinkMs) + 1200)));
 }
 
 /**
@@ -382,6 +444,32 @@ function createCanvas(chessBoard) {
     canvas.style.pointerEvents = "none";
 
     chessBoard.appendChild(canvas);
+}
+
+function setupBoardResizeObserver(chessBoard) {
+    try {
+        if (!('ResizeObserver' in window) || !chessBoard) return;
+        if (boardResizeObserver) {
+            try { boardResizeObserver.disconnect(); } catch (_) {}
+            boardResizeObserver = null;
+        }
+        const canvas = document.getElementById('canvas');
+        boardResizeObserver = new ResizeObserver(() => {
+            try {
+                if (!canvas) return;
+                canvas.width = chessBoard.offsetWidth;
+                canvas.height = chessBoard.offsetHeight;
+                // Recompute points to keep arrows aligned
+                if (lastPlayingAs === 1) {
+                    initializeWhite(chessBoard);
+                } else if (lastPlayingAs === 2) {
+                    initializeBlack(chessBoard);
+                }
+                drawMultiPVArrows();
+            } catch (_) {}
+        });
+        boardResizeObserver.observe(chessBoard);
+    } catch (_) {}
 }
 
 function reinitializeBoard(gameInfo) {
@@ -404,6 +492,7 @@ function reinitializeBoard(gameInfo) {
         }
 
         createCanvas(chessBoard);
+        setupBoardResizeObserver(chessBoard);
     }
 }
 
@@ -418,8 +507,13 @@ window.addEventListener('message', (event) => {
 
         lastFen = gameInfo.fen;
         reinitializeBoard(gameInfo);
-
-        processFEN(gameInfo.fen);
+        // Only analyze on init if it's our turn to move
+        const active = getActiveColorFromFEN(gameInfo.fen);
+        if (active == gameInfo.playingAs) {
+            processFEN(gameInfo.fen);
+        } else {
+            try { $("#canvas").clearCanvas(); } catch (e) {}
+        }
     }
 
     if (event.data && event.data.type === 'move_made') {
@@ -448,12 +542,18 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         console.log("Updating Stockfish level to:", selectedLevel);
         stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
         // Re-evaluate position with new level
-        if (lastFen) { processFEN(lastFen); }
+        if (lastFen) {
+            const active = getActiveColorFromFEN(lastFen);
+            if (active == lastPlayingAs) { processFEN(lastFen); }
+        }
     }
     if (request.type === 'set-think-time') {
         selectedThinkMs = Math.max(200, Math.min(5000, parseInt(request.radioValue, 10) || 200));
         console.log("Updating Stockfish think time to:", selectedThinkMs, "ms");
-        if (lastFen) { processFEN(lastFen); }
+        if (lastFen) {
+            const active = getActiveColorFromFEN(lastFen);
+            if (active == lastPlayingAs) { processFEN(lastFen); }
+        }
     }
     if (request.type === 'set-auto-move') {
         autoMoveEnabled = Boolean(request.enabled);
@@ -469,6 +569,9 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         selectedMultiPV = mpv;
         console.log("Updating Stockfish MultiPV to:", selectedMultiPV);
         stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
-        if (lastFen) { processFEN(lastFen); }
+        if (lastFen) {
+            const active = getActiveColorFromFEN(lastFen);
+            if (active == lastPlayingAs) { processFEN(lastFen); }
+        }
     }
 });
