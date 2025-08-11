@@ -12,6 +12,7 @@ var point = [];
 let stockfish = null;
 let selectedMode = "1"; // "1" Fast, "2" Slow
 let selectedLevel = "8";
+let lastFen = null; // Remember last known position so we can re-evaluate on mode changes
 async function loadStockfish() {
     // Charger le fichier Stockfish.js en tant que texte
     const response = await fetch(chrome.runtime.getURL('lib/stockfish.js'));
@@ -33,7 +34,8 @@ async function loadStockfish() {
             resolve({ engineLevel: "8", engineMode: "1" });
         }
     });
-    selectedLevel = String(engineLevel);
+    // Clamp possible stored values to 0..20 range
+    selectedLevel = String(Math.max(0, Math.min(20, parseInt(engineLevel, 10) || 8)));
     selectedMode = String(engineMode);
     stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
 
@@ -137,12 +139,16 @@ function drawPonderMove(pondermove){
 }
 
 function processFEN(fen) {
+    // Cancel any ongoing search before starting a new one
+    try { stockfish.postMessage('stop'); } catch (e) {}
+
     stockfish.postMessage('position fen ' + fen);
-    // Use selected mode for search depth/time
+    // Use selected mode for search time
     if (selectedMode === "2") {
-        stockfish.postMessage('go depth 245');
+        // Slow mode: think longer for a stronger move, but keep it bounded
+        stockfish.postMessage('go movetime 2000');
     } else {
-        // Fast mode keeps previous behaviour for snappy updates
+        // Fast mode: snappy updates suitable for blitz
         stockfish.postMessage('go movetime 200');
     }
 }
@@ -196,6 +202,7 @@ window.addEventListener('message', (event) => {
             playingAs: event.data.gameInfo.playingAs,
         };
 
+        lastFen = gameInfo.fen;
         reinitializeBoard(gameInfo);
 
         processFEN(gameInfo.fen);
@@ -209,6 +216,7 @@ window.addEventListener('message', (event) => {
 
         $("#canvas").clearCanvas();
 
+        lastFen = gameInfo.fen;
         reinitializeBoard(gameInfo);
 
         if (getActiveColorFromFEN(gameInfo.fen) == gameInfo.playingAs) {
@@ -221,7 +229,7 @@ window.addEventListener('message', (event) => {
 // Listen to background.js
 chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     if (request.type === 'set-level') {
-        selectedLevel = String(request.radioValue);
+        selectedLevel = String(Math.max(0, Math.min(20, parseInt(request.radioValue, 10) || 8)));
         console.log("Updating Stockfish level to:", selectedLevel);
         stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
         try { chrome.storage.sync.set({ engineLevel: selectedLevel }); } catch (e) {}
@@ -230,6 +238,9 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         selectedMode = String(request.radioValue);
         console.log("Updating Stockfish mode to:", selectedMode);
         try { chrome.storage.sync.set({ engineMode: selectedMode }); } catch (e) {}
-        // Do not trigger a deep think immediately; will apply on next position
+        // Re-evaluate current position immediately so user sees the effect
+        if (lastFen) {
+            processFEN(lastFen);
+        }
     }
 });

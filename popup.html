@@ -14,40 +14,10 @@
                 <span>Choose a level (default is 8):</span>
             </div>
             <div class="level-choice">
-                <form id="myForm">
-                    <div class="level-choice-item">
-                        <input type="radio" name="level" value="1" id="level-1">
-                        <label for="level-1">Level 1: ~850 elo</label>
-                    </div>
-                    <div class="level-choice-item">
-                        <input type="radio" name="level" value="2" id="level-2">
-                        <label for="level-2">Level 2: ~950 elo</label>
-                    </div>
-                    <div class="level-choice-item">
-                        <input type="radio" name="level" value="3" id="level-3">
-                        <label for="level-3">Level 3: ~1050 elo</label>
-                    </div>
-                    <div class="level-choice-item">
-                        <input type="radio" name="level" value="4" id="level-4">
-                        <label for="level-4">Level 4: ~1250 elo</label>
-                    </div>
-                    <div class="level-choice-item">
-                        <input type="radio" name="level" value="5" id="level-5">
-                        <label for="level-5">Level 5: ~1700 elo</label>
-                    </div>
-                    <div class="level-choice-item">
-                        <input type="radio" name="level" value="6" id="level-6">
-                        <label for="level-6">Level 6: ~1900 elo</label>
-                    </div>
-                    <div class="level-choice-item">
-                        <input type="radio" name="level" value="7" id="level-7">
-                        <label for="level-7">Level 7: ~2000 elo</label>
-                    </div>
-                    <div class="level-choice-item">
-                        <input type="radio" name="level" value="8" id="level-8" checked> 
-                        <label for="level-8">Level 8: ~2250 elo</label>
-                    </div>
-                </form>
+                <div style="text-align: center; margin: 6px 0;">
+                    Level <span id="level-slider-value">8</span> (0–20)
+                </div>
+                <input type="range" min="0" max="20" step="1" id="level-slider" value="8" style="width: 100%;" />
             </div>
             <div class="level-button">
                 <button id="set-level">Set</button>

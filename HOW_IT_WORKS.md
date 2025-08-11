@@ -12,7 +12,7 @@ This guide explains the moving parts in plain English: what runs where, how it r
   - A blue arrow showing Stockfish’s recommended move.
   - A red arrow showing the “ponder” move (what it expects next).
 - Click the extension’s popup to set:
-  - Engine level (1–8).
+  - Engine level (0–20).
   - Mode: Fast (good for blitz) or Slow (stronger, deeper search).
 
 ---
@@ -56,7 +56,7 @@ window.postMessage({ type: 'move_made', gameInfo: { fen, playingAs } }, '*');
 ### How Stockfish runs inside the extension
 
 - The content script loads `lib/stockfish.js` and starts it as a Web Worker (a background thread, no separate server required).
-- It initializes the engine (UCI protocol) and sets a default skill level.
+  - It initializes the engine (UCI protocol) and sets a default skill level.
 - Every time a new FEN arrives, it tells Stockfish: “Here’s the position—think for a short time and give me your best move.”
 - When Stockfish responds, the script parses `bestmove` and `ponder` from the engine’s text output.
 
@@ -91,7 +91,7 @@ Key points:
 - The popup sends messages when you click “Set” for level or mode.
 - The background script forwards those messages to the active Chess.com tab.
 - The content script updates Stockfish accordingly:
-  - Level changes update `Skill Level`.
+  - Level changes update `Skill Level` (now 0–20).
   - Mode changes pick a fast or deep search command.
 
 What this looks like in the code:
@@ -112,7 +112,11 @@ chrome.runtime.onMessage.addListener((request) => {
     stockfish.postMessage(`setoption name Skill Level value ${request.radioValue}`);
   }
   if (request.type === 'set-mode') {
-    const mode = request.radioValue === "1" ? "go depth 15" : "go depth 245";
+    const mode = request.radioValue === "1" ? "go movetime 200" : "go movetime 2000";
+    stockfish.postMessage('stop');
+    if (lastFen) {
+      stockfish.postMessage('position fen ' + lastFen);
+    }
     stockfish.postMessage(mode);
   }
 });
@@ -177,7 +181,7 @@ Troubleshooting tips:
   - How it runs: Started as a Web Worker from the content script, so heavy computation doesn’t block the page UI.
   - Inputs it receives:
     - `uci`: initialize the engine
-    - `setoption name Skill Level value N`: pick skill level (N from 1–8 here)
+    - `setoption name Skill Level value N`: pick skill level (N from 0–20)
     - `position fen <FEN>`: set the current position
     - `go movetime 200` or `go depth N`: think for a fixed time or to a fixed depth
   - Outputs it sends back: text lines like `bestmove e2e4 ponder e7e5`. The content script parses these to draw arrows.
@@ -198,10 +202,10 @@ Troubleshooting tips:
 Engine command quick reference used by the extension:
 
 - Initialize: `uci`
-- Set skill level: `setoption name Skill Level value <1..8>`
+- Set skill level: `setoption name Skill Level value <0..20>`
 - Set position: `position fen <FEN>`
 - Think (fast): `go movetime 200`
-- Think (mode-dependent): `go depth 15` (fast) or `go depth 245` (slow)
+- Think (mode-dependent): `go movetime 200` (fast) or `go movetime 2000` (slow)
 
 All messages are plain strings sent via `stockfish.postMessage(...)`, and replies are received on `stockfish.onmessage`.
 
