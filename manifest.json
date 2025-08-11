@@ -29,7 +29,6 @@
     {
       "resources": [
         "lib/stockfish.js",
-        "lib/jquery.js",
         "inject.js"
       ],
       "matches": [

@@ -8,12 +8,12 @@ This guide explains the moving parts in plain English: what runs where, how it r
 
 ### What you see as a user
 
-- Open a game on Chess.com. After a short initialization, you’ll see two arrows:
-  - A blue arrow showing Stockfish’s recommended move.
-  - A red arrow showing the “ponder” move (what it expects next).
+- Open a game on Chess.com. After a short initialization, you’ll see colored arrows showing Stockfish’s recommended move(s).
 - Click the extension’s popup to set:
   - Engine level (0–20).
   - Think time per move (0.2–5.0s).
+  - Number of lines to show (1–5).
+  - Auto-move settings (experimental).
 
 ---
 
@@ -81,43 +81,44 @@ stockfish.onmessage = (event) => {
 3. Using jCanvas (a tiny drawing helper on top of jQuery), it draws thick, rounded arrows from the “from” square to the “to” square.
 
 Key points:
-- Blue = best move, Red = ponder move.
+- Different colors are used for multiple move candidates (MultiPV).
 - The canvas is cleared and redrawn after each move or perspective change.
 
 ---
 
 ### How your popup settings affect the engine
 
-- The popup sends messages when you click “Set” for level and think time.
+- The popup sends messages when you click “Set” for level, think time, and MultiPV.
   - The background script forwards those messages to the active Chess.com tab.
   - The content script updates Stockfish accordingly:
   - Level changes update `Skill Level` (0–20).
   - Think-time changes update `go movetime <ms>`.
+  - MultiPV changes update how many lines Stockfish considers.
 
 What this looks like in the code:
 
 ```1:12:background.js
+// Forwards popup messages (set-level, set-think-time, set-multipv, set-auto-move)
 chrome.runtime.onMessage.addListener((request) => {
-  if (request.type === 'set-level' || request.type === 'set-mode') {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs.length) chrome.tabs.sendMessage(tabs[0].id, request);
-    });
-  }
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs.length) chrome.tabs.sendMessage(tabs[0].id, request);
+  });
 });
 ```
 
-```203:214:content.js
+```402:480:content.js
 chrome.runtime.onMessage.addListener((request) => {
   if (request.type === 'set-level') {
     stockfish.postMessage(`setoption name Skill Level value ${request.radioValue}`);
+    if (lastFen) processFEN(lastFen);
   }
-  if (request.type === 'set-mode') {
-    const mode = request.radioValue === "1" ? "go movetime 200" : "go movetime 2000";
-    stockfish.postMessage('stop');
-    if (lastFen) {
-      stockfish.postMessage('position fen ' + lastFen);
-    }
-    stockfish.postMessage(mode);
+  if (request.type === 'set-think-time') {
+    selectedThinkMs = Math.max(200, Math.min(5000, parseInt(request.radioValue, 10) || 200));
+    if (lastFen) processFEN(lastFen);
+  }
+  if (request.type === 'set-multipv') {
+    stockfish.postMessage(`setoption name MultiPV value ${request.value}`);
+    if (lastFen) processFEN(lastFen);
   }
 });
 ```
@@ -128,7 +129,7 @@ chrome.runtime.onMessage.addListener((request) => {
 
 - Permissions declared in `manifest.json`:
   - `activeTab`: interact with the current page.
-  - Host permission for `https://www.chess.com/*`: run only on Chess.com.
+  - `host_permissions` for `https://www.chess.com/*`: run only on Chess.com.
 - No external servers are contacted. Stockfish runs locally in your browser.
 - The script reads the page’s game state to compute and draw arrows; it does not upload your data.
 
@@ -205,7 +206,6 @@ Engine command quick reference used by the extension:
 - Set skill level: `setoption name Skill Level value <0..20>`
 - Set position: `position fen <FEN>`
 - Think (time control): `go movetime <ms>` (e.g. 200–5000 ms)
-- Think (mode-dependent): `go movetime 200` (fast) or `go movetime 2000` (slow)
 
 All messages are plain strings sent via `stockfish.postMessage(...)`, and replies are received on `stockfish.onmessage`.
 

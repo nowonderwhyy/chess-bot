@@ -10,7 +10,6 @@ var rankBlack = ["h", "g", "f", "e", "d", "c", "b", "a"];
 var point = {};
 
 let stockfish = null;
-let selectedMode = "1"; // Legacy, kept for backward compat
 let selectedLevel = "8";
 let selectedThinkMs = 200; // default 200ms
 let autoMoveEnabled = false;
@@ -34,16 +33,15 @@ async function loadStockfish() {
 
     stockfish.postMessage('uci');
     // Load saved preferences before setting options
-    const { engineLevel = "8", engineMode = "1", engineThinkMs = 200, engineMultiPV = 1, autoMove = false, autoMoveDelayBaseMs: storedBase = 150, autoMoveDelayJitterMs: storedJitter = 600 } = await new Promise((resolve) => {
+    const { engineLevel = "8", engineThinkMs = 200, engineMultiPV = 1, autoMove = false, autoMoveDelayBaseMs: storedBase = 150, autoMoveDelayJitterMs: storedJitter = 600 } = await new Promise((resolve) => {
         try {
-            chrome.storage.sync.get({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 }, (items) => resolve(items));
+            chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 }, (items) => resolve(items));
         } catch (e) {
-            resolve({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 });
+            resolve({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 });
         }
     });
     // Clamp possible stored values to 0..20 range
     selectedLevel = String(Math.max(0, Math.min(20, parseInt(engineLevel, 10) || 8)));
-    selectedMode = String(engineMode);
     selectedThinkMs = Math.max(200, Math.min(5000, parseInt(engineThinkMs, 10) || 200));
     selectedMultiPV = Math.max(1, Math.min(5, parseInt(engineMultiPV, 10) || 1));
     autoMoveEnabled = Boolean(autoMove);
@@ -71,7 +69,7 @@ async function loadStockfish() {
                         drawMultiPVArrows();
                     }
                 }
-            } catch (e) {}
+            } catch (e) { console.warn('[ChessBot] Error parsing info line:', e); }
         }
         if (moveRaw.startsWith('bestmove')) {
             // Formats:
@@ -355,7 +353,10 @@ function tryAutoMove(uciMove) {
 
 function processFEN(fen) {
     // Cancel any ongoing search before starting a new one
-    try { stockfish.postMessage('stop'); } catch (e) {}
+    try { stockfish.postMessage('stop'); } catch (e) { console.warn('[ChessBot] Failed to send "stop" to stockfish:', e); }
+
+    // It's a new position, so clear the auto-move lock
+    lastAutoMovedFen = null;
 
     stockfish.postMessage('position fen ' + fen);
     // Use selected think time for search
@@ -435,9 +436,6 @@ window.addEventListener('message', (event) => {
         const active = getActiveColorFromFEN(gameInfo.fen);
         if (active == gameInfo.playingAs) {
             processFEN(gameInfo.fen);
-        } else {
-            // Opponent's turn: allow auto-move again on next our-turn position
-            lastAutoMovedFen = null;
         }
     }
 });
@@ -449,12 +447,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         selectedLevel = String(Math.max(0, Math.min(20, parseInt(request.radioValue, 10) || 8)));
         console.log("Updating Stockfish level to:", selectedLevel);
         stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
-    }
-    if (request.type === 'set-mode') {
-        // Legacy support: map Fast/Slow to 200ms/2000ms
-        selectedMode = String(request.radioValue);
-        selectedThinkMs = selectedMode === '2' ? 2000 : 200;
-        console.log("Updating Stockfish think time (legacy mode) to:", selectedThinkMs, "ms");
+        // Re-evaluate position with new level
         if (lastFen) { processFEN(lastFen); }
     }
     if (request.type === 'set-think-time') {

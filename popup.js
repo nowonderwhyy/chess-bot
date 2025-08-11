@@ -130,19 +130,9 @@ $(document).ready(function () {
         safeSend({ type: "set-multipv", value: mpv });
     });
 
-    $("#set-auto-move").click(function () {
-        const autoMove = $("#auto-move-checkbox").is(':checked');
-        const base = $("#auto-delay-base-slider").val();
-        const jitter = $("#auto-delay-jitter-slider").val();
-        debouncedSet({ autoMove: autoMove, autoMoveDelayBaseMs: base, autoMoveDelayJitterMs: jitter });
-        safeSend({ type: "set-auto-move", enabled: autoMove });
-    });
-
     // Apply immediately when toggling checkbox
     $("#auto-move-checkbox").on('change', function () {
         const autoMove = $(this).is(':checked');
-        const base = $("#auto-delay-base-slider").val();
-        const jitter = $("#auto-delay-jitter-slider").val();
         debouncedSet({ autoMove: autoMove });
         safeSend({ type: "set-auto-move", enabled: autoMove });
     });
