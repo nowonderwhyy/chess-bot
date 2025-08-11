@@ -7,7 +7,7 @@ document.head.appendChild(script);
 
 var rank = ["a", "b", "c", "d", "e", "f", "g", "h"];
 var rankBlack = ["h", "g", "f", "e", "d", "c", "b", "a"];
-var point = [];
+var point = {};
 
 let stockfish = null;
 let selectedMode = "1"; // Legacy, kept for backward compat
@@ -42,12 +42,24 @@ async function loadStockfish() {
     stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
 
     stockfish.onmessage = function (event) {
-        const moveRaw = event.data;
-        if (moveRaw.indexOf('bestmove') > -1) {
-            const bestmove = moveRaw.slice(9, moveRaw.indexOf('ponder') - 1);
-            drawBestMove(bestmove);
-            const pondermove = moveRaw.slice(moveRaw.indexOf('ponder') + 7, moveRaw.length);
-            drawPonderMove(pondermove);
+        const moveRaw = String(event.data || '');
+        if (moveRaw.startsWith('bestmove')) {
+            // Formats:
+            // - "bestmove e2e4 ponder e7e5"
+            // - "bestmove e2e4"
+            // - "bestmove (none)"
+            const tokens = moveRaw.trim().split(/\s+/);
+            const idxBest = tokens.indexOf('bestmove');
+            const bestToken = idxBest >= 0 ? tokens[idxBest + 1] : undefined;
+            const idxPonder = tokens.indexOf('ponder');
+            const ponderToken = idxPonder >= 0 ? tokens[idxPonder + 1] : undefined;
+
+            if (bestToken && bestToken !== '(none)' && bestToken.length >= 4) {
+                drawBestMove(bestToken);
+            }
+            if (ponderToken && ponderToken.length >= 4) {
+                drawPonderMove(ponderToken);
+            }
         }
     };
 
@@ -60,9 +72,11 @@ loadStockfish().then((stockfish) => {
 });
 
 function initializeBlack(board) {
-    board.position = "relative";
+    if (!board) return;
+    board.style.position = "relative";
     var itemWidth = board.offsetWidth / 8;
     var itemHeight = board.offsetHeight / 8;
+    point = {};
     for (var x = 0; x < 8; x++) {
         var width = itemWidth * (x + 1);
         for (var y = 1; y < 9; y++) {
@@ -76,9 +90,11 @@ function initializeBlack(board) {
 }
 
 function initializeWhite(board) {
-    board.position = "relative";
+    if (!board) return;
+    board.style.position = "relative";
     var itemWidth = board.offsetWidth / 8;
     var itemHeight = board.offsetHeight / 8;
+    point = {};
     for (var x = 0; x < 8; x++) {
         var width = itemWidth * (x + 1);
         for (var y = 8; y > 0; y--) {
@@ -107,6 +123,10 @@ function drawBestMove(bestmove){
     var pf = point[moveFrom];
     var pt = point[moveTo];
 
+    if (!pf || !pt) {
+        return;
+    }
+
     $('#canvas').drawLine({
         strokeStyle: "rgba(24, 171, 219, 0.8)",//blue
         strokeWidth: 8,
@@ -126,6 +146,10 @@ function drawPonderMove(pondermove){
 
     var pf = point[moveFrom];
     var pt = point[moveTo];
+
+    if (!pf || !pt) {
+        return;
+    }
 
     $('#canvas').drawLine({
         strokeStyle: "rgba(191,63,63,0.8)",//red
@@ -162,6 +186,7 @@ function createCanvas(chessBoard) {
     canvas.style.position = "absolute";
     canvas.style.left = 0;
     canvas.style.top = 0;
+    canvas.style.pointerEvents = "none";
 
     chessBoard.appendChild(canvas);
 }
