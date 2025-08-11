@@ -13,7 +13,7 @@ This guide explains the moving parts in plain English: what runs where, how it r
   - A red arrow showing the “ponder” move (what it expects next).
 - Click the extension’s popup to set:
   - Engine level (0–20).
-  - Mode: Fast (good for blitz) or Slow (stronger, deeper search).
+  - Think time per move (0.2–5.0s).
 
 ---
 
@@ -88,11 +88,11 @@ Key points:
 
 ### How your popup settings affect the engine
 
-- The popup sends messages when you click “Set” for level or mode.
-- The background script forwards those messages to the active Chess.com tab.
-- The content script updates Stockfish accordingly:
-  - Level changes update `Skill Level` (now 0–20).
-  - Mode changes pick a fast or deep search command.
+- The popup sends messages when you click “Set” for level and think time.
+  - The background script forwards those messages to the active Chess.com tab.
+  - The content script updates Stockfish accordingly:
+  - Level changes update `Skill Level` (0–20).
+  - Think-time changes update `go movetime <ms>`.
 
 What this looks like in the code:
 
@@ -204,7 +204,7 @@ Engine command quick reference used by the extension:
 - Initialize: `uci`
 - Set skill level: `setoption name Skill Level value <0..20>`
 - Set position: `position fen <FEN>`
-- Think (fast): `go movetime 200`
+- Think (time control): `go movetime <ms>` (e.g. 200–5000 ms)
 - Think (mode-dependent): `go movetime 200` (fast) or `go movetime 2000` (slow)
 
 All messages are plain strings sent via `stockfish.postMessage(...)`, and replies are received on `stockfish.onmessage`.

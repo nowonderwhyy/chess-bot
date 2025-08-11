@@ -7,7 +7,7 @@
     <body>
         <span>Start a game on Chess.com and the bot will run automatically. It takes 5-10 seconds to initialise.</span>
         <div class="current-state" style="margin: 8px 0; font-weight: 600;">
-            Current: Level <span id="current-level">8</span>, Mode <span id="current-mode">Fast</span>
+            Current: Level <span id="current-level">8</span> (<span id="current-level-elo">~2250 Elo</span>), Think <span id="current-mode">0.2s</span>
         </div>
         <div class="level-container">
             <div class="title">
@@ -15,7 +15,7 @@
             </div>
             <div class="level-choice">
                 <div style="text-align: center; margin: 6px 0;">
-                    Level <span id="level-slider-value">8</span> (0–20)
+                    Level <span id="level-slider-value">8</span> (0–20) — <span id="level-elo">~2250 Elo</span>
                 </div>
                 <input type="range" min="0" max="20" step="1" id="level-slider" value="8" style="width: 100%;" />
             </div>
@@ -24,19 +24,16 @@
             </div>
         </div>
         <div class="depthSettings">
-            <!-- input for depth -->
             <div class="title">
-                <span>Choose a mode:</span>
+                <span>Engine think time per move:</span>
             </div>
             <div class="othersettings-choice">
-                <div class="othersettings-choice-item">
-                    <label for="depth-1">Fast (good for blitz)</label>
-                    <input type="radio" name="depth" value="1" id="depth-1" checked>
-
-                    <label for="depth-2">Slow (Stronger)</label>
-                    <input type="radio" name="depth" value="2" id="depth-2">
-
-                    <button id="set-depth">Set</button>
+                <div class="othersettings-choice-item" style="display: flex; flex-direction: column; gap: 8px;">
+                    <div style="text-align: center;">
+                        <span>Think: <span id="time-slider-value">0.2</span>s (0.2s–5.0s)</span>
+                    </div>
+                    <input type="range" min="200" max="5000" step="100" id="time-slider" value="200" style="width: 100%;" />
+                    <button id="set-time">Set</button>
                 </div>
             </div>
         </div>
