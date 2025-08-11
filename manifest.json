@@ -4,7 +4,8 @@
   "description": "Extract FEN from Chess.com game",
   "version": "1.0",
   "permissions": [
-    "activeTab"
+    "activeTab",
+    "storage"
   ],
   "host_permissions": [
     "https://www.chess.com/*"

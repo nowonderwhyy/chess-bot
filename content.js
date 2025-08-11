@@ -10,6 +10,8 @@ var rankBlack = ["h", "g", "f", "e", "d", "c", "b", "a"];
 var point = [];
 
 let stockfish = null;
+let selectedMode = "1"; // "1" Fast, "2" Slow
+let selectedLevel = "8";
 async function loadStockfish() {
     // Charger le fichier Stockfish.js en tant que texte
     const response = await fetch(chrome.runtime.getURL('lib/stockfish.js'));
@@ -23,7 +25,17 @@ async function loadStockfish() {
     stockfish = new Worker(blobURL);
 
     stockfish.postMessage('uci');
-    stockfish.postMessage('setoption name Skill Level value 8');
+    // Load saved preferences before setting options
+    const { engineLevel = "8", engineMode = "1" } = await new Promise((resolve) => {
+        try {
+            chrome.storage.sync.get({ engineLevel: "8", engineMode: "1" }, (items) => resolve(items));
+        } catch (e) {
+            resolve({ engineLevel: "8", engineMode: "1" });
+        }
+    });
+    selectedLevel = String(engineLevel);
+    selectedMode = String(engineMode);
+    stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
 
     stockfish.onmessage = function (event) {
         const moveRaw = event.data;
@@ -126,7 +138,13 @@ function drawPonderMove(pondermove){
 
 function processFEN(fen) {
     stockfish.postMessage('position fen ' + fen);
-    stockfish.postMessage('go movetime 200');
+    // Use selected mode for search depth/time
+    if (selectedMode === "2") {
+        stockfish.postMessage('go depth 245');
+    } else {
+        // Fast mode keeps previous behaviour for snappy updates
+        stockfish.postMessage('go movetime 200');
+    }
 }
 
 /**
@@ -203,12 +221,15 @@ window.addEventListener('message', (event) => {
 // Listen to background.js
 chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     if (request.type === 'set-level') {
-        console.log("Updating Stockfish level to:", request.radioValue);
-        stockfish.postMessage(`setoption name Skill Level value ${request.radioValue}`);
+        selectedLevel = String(request.radioValue);
+        console.log("Updating Stockfish level to:", selectedLevel);
+        stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
+        try { chrome.storage.sync.set({ engineLevel: selectedLevel }); } catch (e) {}
     }
     if (request.type === 'set-mode') {
-        console.log("Updating Stockfish mode to:", request.radioValue);
-        const mode = request.radioValue === "1" ? "go depth 15" : "go depth 245";
-        stockfish.postMessage(mode);
+        selectedMode = String(request.radioValue);
+        console.log("Updating Stockfish mode to:", selectedMode);
+        try { chrome.storage.sync.set({ engineMode: selectedMode }); } catch (e) {}
+        // Do not trigger a deep think immediately; will apply on next position
     }
 });
