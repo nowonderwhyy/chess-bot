@@ -39,15 +39,19 @@ function updateCurrentStateUI(level, thinkMs) {
 }
 
 function restoreSelections() {
-    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200 }, function (items) {
-        const { engineLevel, engineThinkMs } = items;
+    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, autoMove: false, autoMoveDelayMs: 100 }, function (items) {
+        const { engineLevel, engineThinkMs, autoMove, autoMoveDelayMs } = items;
         const clampedLevel = String(Math.max(0, Math.min(20, parseInt(engineLevel, 10) || 8)));
         const clampedMs = String(Math.max(200, Math.min(5000, parseInt(engineThinkMs, 10) || 200)));
+        const clampedDelay = String(Math.max(0, Math.min(1000, parseInt(autoMoveDelayMs, 10) || 100)));
         $("#level-slider").val(clampedLevel);
         $("#level-slider-value").text(clampedLevel);
         $("#level-elo").text(`~${estimateEloForLevel(clampedLevel)} Elo`);
         $("#time-slider").val(clampedMs);
         $("#time-slider-value").text((Number(clampedMs) / 1000).toFixed(1));
+        $("#auto-move-checkbox").prop('checked', Boolean(autoMove));
+        $("#auto-delay-slider").val(clampedDelay);
+        $("#auto-delay-value").text(clampedDelay);
         updateCurrentStateUI(clampedLevel, clampedMs);
     });
 }
@@ -67,6 +71,15 @@ $(document).ready(function () {
         $("#time-slider-value").text((Number(ms) / 1000).toFixed(1));
     });
 
+    $("#auto-delay-slider").on("input change", function () {
+        const ms = $(this).val();
+        $("#auto-delay-value").text(String(ms));
+        // Live-apply delay when auto-move is enabled
+        const autoMove = $("#auto-move-checkbox").is(':checked');
+        chrome.storage.sync.set({ autoMoveDelayMs: ms });
+        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove, delayMs: Number(ms) });
+    });
+
     $("#set-level").click(function () {
         const levelValue = $("#level-slider").val();
         chrome.storage.sync.set({ engineLevel: levelValue });
@@ -81,5 +94,20 @@ $(document).ready(function () {
         updateCurrentStateUI($("#level-slider").val(), thinkMs);
         // Fire-and-forget; no response expected to avoid runtime.lastError
         chrome.runtime.sendMessage({ type: "set-think-time", radioValue: thinkMs });
+    });
+
+    $("#set-auto-move").click(function () {
+        const autoMove = $("#auto-move-checkbox").is(':checked');
+        const autoDelay = $("#auto-delay-slider").val();
+        chrome.storage.sync.set({ autoMove: autoMove, autoMoveDelayMs: autoDelay });
+        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove, delayMs: Number(autoDelay) });
+    });
+
+    // Apply immediately when toggling checkbox
+    $("#auto-move-checkbox").on('change', function () {
+        const autoMove = $(this).is(':checked');
+        const autoDelay = $("#auto-delay-slider").val();
+        chrome.storage.sync.set({ autoMove: autoMove });
+        chrome.runtime.sendMessage({ type: "set-auto-move", enabled: autoMove, delayMs: Number(autoDelay) });
     });
 });

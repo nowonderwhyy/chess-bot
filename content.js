@@ -13,7 +13,10 @@ let stockfish = null;
 let selectedMode = "1"; // Legacy, kept for backward compat
 let selectedLevel = "8";
 let selectedThinkMs = 200; // default 200ms
+let autoMoveEnabled = false;
+let autoMoveDelayMs = 100;
 let lastFen = null; // Remember last known position so we can re-evaluate on mode changes
+let lastAutoMovedFen = null; // Avoid duplicate auto-moves on same position
 async function loadStockfish() {
     // Charger le fichier Stockfish.js en tant que texte
     const response = await fetch(chrome.runtime.getURL('lib/stockfish.js'));
@@ -28,18 +31,21 @@ async function loadStockfish() {
 
     stockfish.postMessage('uci');
     // Load saved preferences before setting options
-    const { engineLevel = "8", engineMode = "1", engineThinkMs = 200 } = await new Promise((resolve) => {
+    const { engineLevel = "8", engineMode = "1", engineThinkMs = 200, autoMove = false, autoMoveDelayMs: storedDelay = 100 } = await new Promise((resolve) => {
         try {
-            chrome.storage.sync.get({ engineLevel: "8", engineMode: "1", engineThinkMs: 200 }, (items) => resolve(items));
+            chrome.storage.sync.get({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, autoMove: false, autoMoveDelayMs: 100 }, (items) => resolve(items));
         } catch (e) {
-            resolve({ engineLevel: "8", engineMode: "1", engineThinkMs: 200 });
+            resolve({ engineLevel: "8", engineMode: "1", engineThinkMs: 200, autoMove: false, autoMoveDelayMs: 100 });
         }
     });
     // Clamp possible stored values to 0..20 range
     selectedLevel = String(Math.max(0, Math.min(20, parseInt(engineLevel, 10) || 8)));
     selectedMode = String(engineMode);
     selectedThinkMs = Math.max(200, Math.min(5000, parseInt(engineThinkMs, 10) || 200));
+    autoMoveEnabled = Boolean(autoMove);
+    autoMoveDelayMs = Math.max(0, Math.min(1000, parseInt(storedDelay, 10) || 100));
     stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
+    console.log('[ChessBot] init settings:', { selectedLevel, selectedThinkMs, autoMoveEnabled, autoMoveDelayMs });
 
     stockfish.onmessage = function (event) {
         const moveRaw = String(event.data || '');
@@ -55,7 +61,13 @@ async function loadStockfish() {
             const ponderToken = idxPonder >= 0 ? tokens[idxPonder + 1] : undefined;
 
             if (bestToken && bestToken !== '(none)' && bestToken.length >= 4) {
+                console.log('[ChessBot] bestmove:', bestToken);
                 drawBestMove(bestToken);
+                if (autoMoveEnabled) {
+                    tryAutoMove(bestToken);
+                }
+            } else {
+                console.log('[ChessBot] bestmove not found in:', moveRaw);
             }
             if (ponderToken && ponderToken.length >= 4) {
                 drawPonderMove(ponderToken);
@@ -164,6 +176,121 @@ function drawPonderMove(pondermove){
     });
 }
 
+function uciToSquares(uciMove) {
+    // basic form: e2e4, with optional promotion e7e8q
+    const move = String(uciMove || '').toLowerCase().trim();
+    const from = move.slice(0, 2);
+    const to = move.slice(2, 4);
+    const promo = move.length >= 5 ? move[4] : undefined;
+    return { from, to, promo };
+}
+
+function getBoardElement() {
+    return document.querySelector('wc-chess-board');
+}
+
+function getSquareElement(boardEl, algebraic) {
+    if (!boardEl || !algebraic) return null;
+    // Chess.com internal squares are shadow DOM inside wc-chess-board. Try to locate via data-square coords on piece/square layers.
+    // Fallback to hit-testing using our computed points on the overlay canvas.
+    try {
+        // Attempt: query pieces that have square attribute
+        const pieceLayer = boardEl.shadowRoot ? boardEl.shadowRoot.querySelector('div[data-board-layer="piece"]') : null;
+        if (pieceLayer) {
+            const target = pieceLayer.querySelector(`[data-square='${algebraic}']`);
+            if (target) return target;
+        }
+    } catch (e) {}
+    return null;
+}
+
+function getCanvasCenterForSquare(algebraic) {
+    const p = point[algebraic];
+    if (!p) return null;
+    // Return coordinates relative to the board, which matches the overlay canvas
+    return { x: p.width, y: p.height };
+}
+
+function dispatchMouse(boardContainer, type, x, y) {
+    const evt = new MouseEvent(type, {
+        view: window,
+        bubbles: true,
+        cancelable: true,
+        clientX: Math.round(x),
+        clientY: Math.round(y),
+    });
+    boardContainer.dispatchEvent(evt);
+}
+
+function simulateClickMove(fromSquare, toSquare) {
+    // Strategy: send mousedown/mouseup at source then at target relative to the board container
+    const board = document.querySelector('wc-chess-board');
+    if (!board) return false;
+    const boardRect = board.getBoundingClientRect();
+    const fromPos = getCanvasCenterForSquare(fromSquare);
+    const toPos = getCanvasCenterForSquare(toSquare);
+    if (!fromPos || !toPos) return false;
+    const fromX = boardRect.left + fromPos.x;
+    const fromY = boardRect.top + fromPos.y;
+    const toX = boardRect.left + toPos.x;
+    const toY = boardRect.top + toPos.y;
+
+    try {
+        const fromEl = document.elementFromPoint(fromX, fromY) || board;
+        const toEl = document.elementFromPoint(toX, toY) || board;
+        dispatchMouse(fromEl, 'mousedown', fromX, fromY);
+        dispatchMouse(fromEl, 'mouseup', fromX, fromY);
+        dispatchMouse(fromEl, 'click', fromX, fromY);
+        dispatchMouse(toEl, 'mousedown', toX, toY);
+        dispatchMouse(toEl, 'mouseup', toX, toY);
+        dispatchMouse(toEl, 'click', toX, toY);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+function isPromotionMove(uciMove) {
+    return String(uciMove || '').length >= 5; // e.g. e7e8q
+}
+
+function tryAutoMove(uciMove) {
+    // Safety: do not attempt promotions or if it's not our turn
+    if (isPromotionMove(uciMove)) return;
+    if (!lastFen) return;
+    if (lastAutoMovedFen === lastFen) return; // avoid double fire on same position
+
+    const { from, to } = uciToSquares(uciMove);
+    if (!from || !to) return;
+
+    const board = document.querySelector('wc-chess-board');
+    if (!board) return;
+
+    // Extra safety: ensure it's our move according to FEN vs UI color
+    const active = getActiveColorFromFEN(lastFen);
+    if (active !== lastPlayingAs) return;
+
+    const delay = Math.max(0, Number(autoMoveDelayMs) || 0);
+    // Prefer page-context executor via window message
+    try {
+        window.postMessage({ type: 'AUTO_MOVE', move: { from, to }, delayMs: delay }, '*');
+        console.log('[ChessBot] requested AUTO_MOVE', { from, to, delay });
+        lastAutoMovedFen = lastFen;
+        return;
+    } catch (e) {
+        console.warn('[ChessBot] AUTO_MOVE postMessage failed, falling back', e);
+    }
+    // Fallback: simulate clicks from content context
+    window.setTimeout(() => {
+        const ok = simulateClickMove(from, to);
+        if (ok) {
+            lastAutoMovedFen = lastFen;
+        } else {
+            console.warn('[ChessBot] simulateClickMove failed', { from, to });
+        }
+    }, delay);
+}
+
 function processFEN(fen) {
     // Cancel any ongoing search before starting a new one
     try { stockfish.postMessage('stop'); } catch (e) {}
@@ -240,8 +367,12 @@ window.addEventListener('message', (event) => {
         lastFen = gameInfo.fen;
         reinitializeBoard(gameInfo);
 
-        if (getActiveColorFromFEN(gameInfo.fen) == gameInfo.playingAs) {
+        const active = getActiveColorFromFEN(gameInfo.fen);
+        if (active == gameInfo.playingAs) {
             processFEN(gameInfo.fen);
+        } else {
+            // Opponent's turn: allow auto-move again on next our-turn position
+            lastAutoMovedFen = null;
         }
     }
 });
@@ -268,5 +399,11 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         console.log("Updating Stockfish think time to:", selectedThinkMs, "ms");
         try { chrome.storage.sync.set({ engineThinkMs: selectedThinkMs }); } catch (e) {}
         if (lastFen) { processFEN(lastFen); }
+    }
+    if (request.type === 'set-auto-move') {
+        autoMoveEnabled = Boolean(request.enabled);
+        autoMoveDelayMs = Math.max(0, Math.min(1000, parseInt(request.delayMs, 10) || 0));
+        try { chrome.storage.sync.set({ autoMove: autoMoveEnabled, autoMoveDelayMs: autoMoveDelayMs }); } catch (e) {}
+        console.log("Auto-move:", autoMoveEnabled, "Delay:", autoMoveDelayMs, "ms");
     }
 });
