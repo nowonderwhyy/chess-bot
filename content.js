@@ -18,13 +18,16 @@ let autoDelayJitterMs = 600;
 let lastFen = null; // Remember last known position so we can re-evaluate on mode changes
 let lastAutoMovedFen = null; // Avoid duplicate auto-moves on same position
 let selectedMultiPV = 1; // number of candidate lines
-let latestMultiPVLines = []; // cache of parsed multi PVs for current position
+// cache of parsed multi PVs for current position
+// Each entry: { idx: number, move: string, moves: string[], score: { type: 'cp'|'mate', value: number }, wdl?: { w:number, d:number, l:number, winPct:number } }
+let latestMultiPVLines = [];
 let lastDrawAt = 0; // throttle PV arrow draws
 let currentSearchToken = 0; // watchdog token for engine searches
 let bestmoveTimerId = null; // watchdog timer id
 let boardResizeObserver = null; // keep canvas aligned with board
 // Manage engine readiness using UCI isready/readyok
 let pendingReadyCallbacks = [];
+let minimalOverlay = false; // when true, show only PV1 in overlay
 function runWhenEngineReady(callback) {
     try {
         if (typeof callback === 'function') {
@@ -48,12 +51,15 @@ async function loadStockfish() {
     stockfish = new Worker(blobURL);
 
     stockfish.postMessage('uci');
+    // Detect options reported by the engine
+    let hasThreadsOption = false;
+    let seenUciOk = false;
     // Load saved preferences before setting options
-    const { engineLevel = "8", engineThinkMs = 200, engineMultiPV = 1, autoMove = false, autoMoveDelayBaseMs: storedBase = 150, autoMoveDelayJitterMs: storedJitter = 600 } = await new Promise((resolve) => {
+    const { engineLevel = "8", engineThinkMs = 200, engineMultiPV = 1, autoMove = false, autoMoveDelayBaseMs: storedBase = 150, autoMoveDelayJitterMs: storedJitter = 600, eloEnabled: storedEloEnabled = false, eloValue: storedElo = 1600, hashMb: storedHash = 64, ponderEnabled: storedPonder = false, autoMoveConfidencePct: storedConf = 0 } = await new Promise((resolve) => {
         try {
-            chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 }, (items) => resolve(items));
+            chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0 }, (items) => resolve(items));
         } catch (e) {
-            resolve({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 });
+            resolve({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0 });
         }
     });
     // Clamp possible stored values to 0..20 range
@@ -63,8 +69,35 @@ async function loadStockfish() {
     autoMoveEnabled = Boolean(autoMove);
     autoDelayBaseMs = Math.max(0, Math.min(5000, parseInt(storedBase, 10) || 150));
     autoDelayJitterMs = Math.max(0, Math.min(20000, parseInt(storedJitter, 10) || 600));
-    stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
-    stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
+    let eloEnabled = Boolean(storedEloEnabled);
+    let eloValue = Math.max(800, Math.min(2800, parseInt(storedElo, 10) || 1600));
+    let hashMb = Math.max(16, Math.min(256, parseInt(storedHash, 10) || 64));
+    let ponderEnabled = Boolean(storedPonder);
+    let autoMoveConfidencePct = Math.max(0, Math.min(20, parseInt(storedConf, 10) || 0));
+
+    // Sensible threads default; only apply if supported
+    const threadsDefault = Math.max(1, Math.min(2, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 1));
+    let selectedThreads = threadsDefault;
+
+    const applyAllEngineOptions = () => {
+        try {
+            stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
+            stockfish.postMessage('setoption name UCI_ShowWDL value true');
+            if (eloEnabled) {
+                stockfish.postMessage('setoption name UCI_LimitStrength value true');
+                stockfish.postMessage(`setoption name UCI_Elo value ${eloValue}`);
+            } else {
+                stockfish.postMessage('setoption name UCI_LimitStrength value false');
+                stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
+            }
+            stockfish.postMessage(`setoption name Hash value ${hashMb}`);
+            if (hasThreadsOption) {
+                stockfish.postMessage(`setoption name Threads value ${selectedThreads}`);
+            }
+            stockfish.postMessage(`setoption name Ponder value ${ponderEnabled ? 'true' : 'false'}`);
+        } catch (_) {}
+    };
+    applyAllEngineOptions();
     console.log('[ChessBot] init settings:', { selectedLevel, selectedThinkMs, selectedMultiPV, autoMoveEnabled, autoDelayBaseMs, autoDelayJitterMs });
 
     stockfish.onmessage = function (event) {
@@ -76,19 +109,50 @@ async function loadStockfish() {
             } catch (_) {}
             return;
         }
-        // Parse MultiPV info lines: e.g., "info depth 20 seldepth 30 multipv 2 score cp 35 pv e2e4 e7e5 ..."
+        // Detect engine UCI options on boot
+        if (moveRaw.startsWith('option')) {
+            if (/\bname\s+Threads\b/i.test(moveRaw)) {
+                hasThreadsOption = true;
+            }
+        }
+        if (moveRaw.trim() === 'uciok') {
+            seenUciOk = true;
+            applyAllEngineOptions();
+            return;
+        }
+        // Parse MultiPV info lines: e.g., "info depth 20 seldepth 30 multipv 2 score cp 35 wdl 550 300 150 pv e2e4 e7e5 ..."
         if (moveRaw.startsWith('info')) {
             try {
                 const line = moveRaw;
                 const tokens = line.trim().split(/\s+/);
                 const idxMulti = tokens.indexOf('multipv');
                 const idxPv = tokens.indexOf('pv');
+                const idxScore = tokens.indexOf('score');
+                const idxWdl = tokens.indexOf('wdl');
                 if (idxMulti > -1 && idxPv > -1 && idxPv + 1 < tokens.length) {
                     const pvIndex = parseInt(tokens[idxMulti + 1], 10) || 1;
-                    const firstMove = tokens[idxPv + 1];
-                    // Store by pv index (1-based)
+                    const pvMoves = tokens.slice(idxPv + 1).filter(t => /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(t));
+                    const firstMove = pvMoves && pvMoves.length > 0 ? pvMoves[0] : undefined;
+                    let scoreObj = null;
+                    if (idxScore > -1) {
+                        const t = tokens[idxScore + 1];
+                        const v = parseInt(tokens[idxScore + 2], 10);
+                        if (t === 'cp' && !Number.isNaN(v)) scoreObj = { type: 'cp', value: v };
+                        if (t === 'mate' && !Number.isNaN(v)) scoreObj = { type: 'mate', value: v };
+                    }
+                    let wdlObj = null;
+                    if (idxWdl > -1 && idxWdl + 3 < tokens.length) {
+                        const w = parseInt(tokens[idxWdl + 1], 10);
+                        const d = parseInt(tokens[idxWdl + 2], 10);
+                        const l = parseInt(tokens[idxWdl + 3], 10);
+                        const sum = (w || 0) + (d || 0) + (l || 0);
+                        const winPct = sum > 0 ? Math.round(((w || 0) / sum) * 100) : null;
+                        if (!Number.isNaN(w) && !Number.isNaN(d) && !Number.isNaN(l)) {
+                            wdlObj = { w, d, l, winPct };
+                        }
+                    }
                     if (firstMove && firstMove.length >= 4) {
-                        latestMultiPVLines[pvIndex - 1] = firstMove;
+                        latestMultiPVLines[pvIndex - 1] = { idx: pvIndex, move: firstMove, moves: pvMoves, score: scoreObj, wdl: wdlObj };
                         drawMultiPVArrows();
                     }
                 }
@@ -105,22 +169,30 @@ async function loadStockfish() {
             const idxPonder = tokens.indexOf('ponder');
             const ponderToken = idxPonder >= 0 ? tokens[idxPonder + 1] : undefined;
 
+            // Always clear the watchdog on any bestmove (including "(none)")
+            try {
+                if (bestmoveTimerId) { clearTimeout(bestmoveTimerId); bestmoveTimerId = null; }
+            } catch (_) {}
+
             if (bestToken && bestToken !== '(none)' && bestToken.length >= 4) {
                 console.log('[ChessBot] bestmove:', bestToken);
                 // On bestmove, ensure we have at least one arrow; fallback to best if MultiPV info didn't arrive
                 if (!latestMultiPVLines[0]) {
-                    latestMultiPVLines[0] = bestToken;
+                    latestMultiPVLines[0] = { idx: 1, move: bestToken, moves: [bestToken], score: null };
                 }
                 drawMultiPVArrows();
-                // Clear watchdog since we received a bestmove
-                try {
-                    if (bestmoveTimerId) { clearTimeout(bestmoveTimerId); bestmoveTimerId = null; }
-                } catch (_) {}
+                // Remember predicted reply for pondering
+                lastPredictedPonderMove = ponderToken && ponderToken.length >= 4 ? ponderToken : null;
                 if (autoMoveEnabled) {
                     tryAutoMove(bestToken);
                 }
             } else {
                 console.log('[ChessBot] bestmove not found in:', moveRaw);
+                // No legal move (e.g. mate/stalemate). Clear overlay and any ponder state.
+                try { $("#canvas").clearCanvas(); } catch (e) {}
+                latestMultiPVLines = [];
+                lastPredictedPonderMove = null;
+                isPondering = false;
             }
             if (ponderToken && ponderToken.length >= 4) {
                 drawPonderMove(ponderToken);
@@ -272,17 +344,39 @@ function drawMultiPVArrows() {
         "rgba(155, 89, 182, 0.9)",  // purple for PV4
         "rgba(230, 126, 34, 0.9)",  // orange for PV5
     ];
-    for (let i = 0; i < Math.min(selectedMultiPV, latestMultiPVLines.length); i++) {
-        const move = latestMultiPVLines[i];
-        if (!move || move.length < 4) continue;
-        const moveFrom = move.substring(0, 2);
-        const moveTo = move.substring(2, 4);
+    const withAlpha = (c, a) => {
+        if (typeof c !== 'string') return c;
+        if (c.startsWith('rgba')) {
+            return c.replace(/rgba\((\s*\d+\s*,\s*\d+\s*,\s*\d+\s*),\s*[\d.]+\s*\)/, `rgba($1, ${a})`);
+        }
+        if (c.startsWith('rgb(')) {
+            return c.replace(/rgb\(([^)]+)\)/, `rgba($1, ${a})`);
+        }
+        return c;
+    };
+    const widthFor = (i) => [10, 8, 7, 6, 5][Math.min(i, 4)];
+    const alphaFor = (i) => [0.95, 0.65, 0.5, 0.4, 0.3][Math.min(i, 4)];
+    const shadowFor = (i) => [12, 6, 0, 0, 0][Math.min(i, 4)];
+    const maxLines = minimalOverlay ? 1 : Math.min(selectedMultiPV, latestMultiPVLines.length);
+    for (let i = 0; i < maxLines; i++) {
+        const entry = latestMultiPVLines[i];
+        const moveStr = typeof entry === 'string' ? entry : (entry && entry.move);
+        if (!moveStr || moveStr.length < 4) continue;
+        const moveFrom = moveStr.substring(0, 2);
+        const moveTo = moveStr.substring(2, 4);
         const pf = point[moveFrom];
         const pt = point[moveTo];
         if (!pf || !pt) continue;
+        const color = colors[i % colors.length];
+        const alpha = alphaFor(i);
+        const mainColor = withAlpha(color, alpha);
+        const outlineColor = 'rgba(0,0,0,' + Math.max(0.12, alpha * 0.18).toFixed(2) + ')';
+        const strokeWidth = widthFor(i);
+        const shadowBlur = shadowFor(i);
+        // Outline underlay for contrast
         $("#canvas").drawLine({
-            strokeStyle: colors[i % colors.length],
-            strokeWidth: i === 0 ? 8 : 6,
+            strokeStyle: outlineColor,
+            strokeWidth: strokeWidth + 2,
             rounded: true,
             endArrow: true,
             startArrow: false,
@@ -291,6 +385,88 @@ function drawMultiPVArrows() {
             x1: pf.width, y1: pf.height,
             x2: pt.width, y2: pt.height
         });
+        // Main colored line
+        $("#canvas").drawLine({
+            strokeStyle: mainColor,
+            strokeWidth: strokeWidth,
+            rounded: true,
+            endArrow: true,
+            startArrow: false,
+            arrowRadius: i === 0 ? 18 : 15,
+            arrowAngle: 45,
+            shadowColor: withAlpha(color, Math.min(1, alpha + 0.05)),
+            shadowBlur: shadowBlur,
+            x1: pf.width, y1: pf.height,
+            x2: pt.width, y2: pt.height
+        });
+        // Ghost breadcrumbs for subsequent PV moves (PV1 only)
+        try {
+            const trailMoves = (i === 0 && entry && entry.moves) ? entry.moves.slice(1, 4) : [];
+            const ghostColor = withAlpha(color, Math.max(0.15, alpha * 0.35));
+            for (const mv of trailMoves) {
+                if (typeof mv !== 'string' || mv.length < 4) continue;
+                const f = point[mv.substring(0, 2)];
+                const t = point[mv.substring(2, 4)];
+                if (!f || !t) continue;
+                $("#canvas").drawLine({
+                    strokeStyle: ghostColor,
+                    strokeWidth: Math.max(2, Math.round(strokeWidth * 0.4)),
+                    rounded: true,
+                    endArrow: false,
+                    startArrow: false,
+                    arrowRadius: 10,
+                    arrowAngle: 45,
+                    x1: f.width, y1: f.height,
+                    x2: t.width, y2: t.height
+                });
+            }
+        } catch (_) {}
+        // Draw a small badge with eval and/or WDL if available
+        try {
+            if (entry && typeof entry === 'object') {
+                const badgeX = pt.width - 12;
+                const badgeY = pt.height - 12 - (i * 14);
+                let label = '';
+                if (entry.score) {
+                    if (entry.score.type === 'cp') {
+                        const v = (entry.score.value || 0) / 100;
+                        label += (v >= 0 ? '+' : '') + v.toFixed(2);
+                    } else if (entry.score.type === 'mate') {
+                        label += '#'+ entry.score.value;
+                    }
+                }
+                if (entry.wdl && typeof entry.wdl.winPct === 'number') {
+                    if (label) label += ' · ';
+                    label += String(entry.wdl.winPct) + '%';
+                }
+                if (label && (i === 0 || !minimalOverlay)) {
+                    $("#canvas").drawText({
+                        fillStyle: mainColor,
+                        strokeStyle: "rgba(0,0,0,0.6)",
+                        strokeWidth: 2,
+                        x: badgeX,
+                        y: badgeY + (i === 0 ? 0 : 2),
+                        fontSize: i === 0 ? 14 : 11,
+                        fontFamily: 'Arial',
+                        text: (i === 0 ? '★ ' : '') + label,
+                        fromCenter: false
+                    });
+                }
+            }
+        } catch (_) {}
+        // For PV3+ use dashed strokes if visible
+        if (!minimalOverlay && i >= 2) {
+            try {
+                const dash = [8, 8];
+                $("#canvas").drawLine({
+                    strokeStyle: mainColor,
+                    strokeWidth: Math.max(3, Math.round(strokeWidth * 0.7)),
+                    x1: pf.width, y1: pf.height,
+                    x2: pt.width, y2: pt.height,
+                    strokeDash: dash
+                });
+            } catch (_) {}
+        }
     }
 }
 
@@ -373,13 +549,26 @@ function isPromotionMove(uciMove) {
 }
 
 function tryAutoMove(uciMove) {
-    // Safety: do not attempt promotions or if it's not our turn
-    if (isPromotionMove(uciMove)) return;
+    // Safety: ensure it's not duplicated or stale
     if (!lastFen) return;
     if (lastAutoMovedFen === lastFen) return; // avoid double fire on same position
 
-    const { from, to } = uciToSquares(uciMove);
+    // Confidence gating using MultiPV and WDL/CP
+    if (!passesAutoMoveConfidenceGate()) {
+        return;
+    }
+
+    const { from, to, promo } = uciToSquares(uciMove);
     if (!from || !to) return;
+    // Minimal legality check: ensure the 'from' square has our piece per FEN
+    try {
+        const piece = getFenSquarePiece(lastFen, from);
+        if (!piece) return;
+        const isWhitePiece = piece === piece.toUpperCase();
+        if ((lastPlayingAs === 1 && !isWhitePiece) || (lastPlayingAs === 2 && isWhitePiece)) {
+            return;
+        }
+    } catch (_) {}
 
     const board = document.querySelector('wc-chess-board');
     if (!board) return;
@@ -393,7 +582,7 @@ function tryAutoMove(uciMove) {
     const delay = base + Math.floor(Math.random() * (margin + 1));
     // Prefer page-context executor via window message
     try {
-        window.postMessage({ type: 'AUTO_MOVE', move: { from, to }, delayMs: delay }, '*');
+        window.postMessage({ type: 'AUTO_MOVE', move: { from, to, promo: promo || (isPromotionMove(uciMove) ? 'q' : undefined) }, delayMs: delay }, '*');
         console.log('[ChessBot] requested AUTO_MOVE', { from, to, delay, base, margin });
         lastAutoMovedFen = lastFen;
         return;
@@ -411,6 +600,35 @@ function tryAutoMove(uciMove) {
     }, delay);
 }
 
+function getFenSquarePiece(fen, square) {
+    try {
+        if (!fen || !square) return null;
+        const boardPart = String(fen).split(' ')[0];
+        const rows = boardPart.split('/');
+        if (!rows || rows.length !== 8) return null;
+        const file = square[0];
+        const rankNum = parseInt(square[1], 10);
+        if (!file || !(rankNum >= 1 && rankNum <= 8)) return null;
+        const fileIndex = 'abcdefgh'.indexOf(file);
+        if (fileIndex < 0) return null;
+        // FEN rows go from rank 8 (index 0) to rank 1 (index 7)
+        const rowIndex = 8 - rankNum;
+        const row = rows[rowIndex];
+        let col = 0;
+        for (let i = 0; i < row.length; i++) {
+            const ch = row[i];
+            if (/[1-8]/.test(ch)) {
+                col += parseInt(ch, 10);
+            } else {
+                if (col === fileIndex) return ch;
+                col += 1;
+            }
+            if (col > 7) break;
+        }
+        return null;
+    } catch (_) { return null; }
+}
+
 function processFEN(fen) {
     // Cancel any ongoing search before starting a new one
     try { stockfish.postMessage('stop'); } catch (e) { console.warn('[ChessBot] Failed to send "stop" to stockfish:', e); }
@@ -420,11 +638,22 @@ function processFEN(fen) {
 
     const startSearch = () => {
         stockfish.postMessage('position fen ' + fen);
-        // Use selected think time for search
         // Reset cached PVs for this position
         latestMultiPVLines = new Array(Math.max(1, selectedMultiPV));
         stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
-        stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+        // Use UCI clock fields if we have valid clocks; fallback to movetime otherwise
+        const c = lastClocks && lastClocks.ok ? lastClocks : null;
+        if (c && typeof c.wtime === 'number' && typeof c.btime === 'number') {
+            const winc = typeof c.winc === 'number' ? c.winc : 0;
+            const binc = typeof c.binc === 'number' ? c.binc : 0;
+            try {
+                stockfish.postMessage(`go wtime ${c.wtime} btime ${c.btime} winc ${winc} binc ${binc}`);
+            } catch (_) {
+                stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+            }
+        } else {
+            stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+        }
     };
     runWhenEngineReady(startSearch);
 
@@ -447,7 +676,14 @@ function processFEN(fen) {
                 try {
                     stockfish.postMessage('position fen ' + lastFen);
                     stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
-                    stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+                    const c = lastClocks && lastClocks.ok ? lastClocks : null;
+                    if (c && typeof c.wtime === 'number' && typeof c.btime === 'number') {
+                        const winc = typeof c.winc === 'number' ? c.winc : 0;
+                        const binc = typeof c.binc === 'number' ? c.binc : 0;
+                        stockfish.postMessage(`go wtime ${c.wtime} btime ${c.btime} winc ${winc} binc ${binc}`);
+                    } else {
+                        stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+                    }
                 } catch (_) {}
             });
         } catch (_) {}
@@ -531,22 +767,32 @@ function reinitializeBoard(gameInfo) {
 }
 
 let lastPlayingAs = null; // Track previous player color
+let lastClocks = { ok: false };
+let lastPredictedPonderMove = null;
+let isPondering = false;
 
 window.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'GET_INIT_GAME_INFO') {
         const gameInfo = {
             fen: event.data.gameInfo.fen,
             playingAs: event.data.gameInfo.playingAs,
+            clocks: event.data.gameInfo.clocks || null,
+            lastMoveUci: event.data.gameInfo.lastMoveUci || null,
         };
 
         lastFen = gameInfo.fen;
         reinitializeBoard(gameInfo);
+        if (gameInfo.clocks && typeof gameInfo.clocks === 'object') {
+            lastClocks = Object.assign({ ok: false, winc: 0, binc: 0 }, gameInfo.clocks);
+        }
         // Only analyze on init if it's our turn to move
         const active = getActiveColorFromFEN(gameInfo.fen);
         if (active == gameInfo.playingAs) {
             processFEN(gameInfo.fen);
         } else {
             try { $("#canvas").clearCanvas(); } catch (e) {}
+            // We just moved; start pondering if enabled
+            startPonderIfEnabled(gameInfo.fen);
         }
     }
 
@@ -554,16 +800,34 @@ window.addEventListener('message', (event) => {
         const gameInfo = {
             fen: event.data.gameInfo.fen,
             playingAs: event.data.gameInfo.playingAs,
+            clocks: event.data.gameInfo.clocks || null,
+            lastMoveUci: event.data.gameInfo.lastMoveUci || null,
         };
 
         $("#canvas").clearCanvas();
 
         lastFen = gameInfo.fen;
         reinitializeBoard(gameInfo);
+        if (gameInfo.clocks && typeof gameInfo.clocks === 'object') {
+            lastClocks = Object.assign({ ok: false, winc: 0, binc: 0 }, gameInfo.clocks);
+        }
 
         const active = getActiveColorFromFEN(gameInfo.fen);
         if (active == gameInfo.playingAs) {
+            // Opponent has just moved, it's our turn → ponder result handling
+            if (isPondering) {
+                const played = gameInfo.lastMoveUci || null;
+                if (played && lastPredictedPonderMove && played.toLowerCase() === lastPredictedPonderMove.toLowerCase()) {
+                    try { stockfish.postMessage('ponderhit'); } catch (_) {}
+                } else {
+                    try { stockfish.postMessage('stop'); } catch (_) {}
+                }
+                isPondering = false;
+            }
             processFEN(gameInfo.fen);
+        } else {
+            // We just moved
+            startPonderIfEnabled(gameInfo.fen);
         }
     }
 });
@@ -574,7 +838,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     if (request.type === 'set-level') {
         selectedLevel = String(Math.max(0, Math.min(20, parseInt(request.radioValue, 10) || 8)));
         console.log("Updating Stockfish level to:", selectedLevel);
-        stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
+        try { stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`); } catch (_) {}
         // Re-evaluate position with new level
         if (lastFen) {
             const active = getActiveColorFromFEN(lastFen);
@@ -602,10 +866,98 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         const mpv = Math.max(1, Math.min(5, parseInt(request.value, 10) || 1));
         selectedMultiPV = mpv;
         console.log("Updating Stockfish MultiPV to:", selectedMultiPV);
-        stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
+        try { stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`); } catch (_) {}
         if (lastFen) {
             const active = getActiveColorFromFEN(lastFen);
             if (active == lastPlayingAs) { processFEN(lastFen); }
         }
     }
+    if (request.type === 'set-minimal-overlay') {
+        minimalOverlay = Boolean(request.enabled);
+        try { drawMultiPVArrows(); } catch (_) {}
+    }
+    if (request.type === 'set-elo-enabled') {
+        const enabled = Boolean(request.enabled);
+        chrome.storage.sync.get({ eloValue: 1600 }, (items) => {
+            try {
+                stockfish.postMessage(`setoption name UCI_LimitStrength value ${enabled ? 'true' : 'false'}`);
+                if (enabled) {
+                    const e = Math.max(800, Math.min(2800, parseInt(items.eloValue, 10) || 1600));
+                    stockfish.postMessage(`setoption name UCI_Elo value ${e}`);
+                } else {
+                    stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
+                }
+            } catch (_) {}
+        });
+        if (lastFen) {
+            const active = getActiveColorFromFEN(lastFen);
+            if (active == lastPlayingAs) { processFEN(lastFen); }
+        }
+    }
+    if (request.type === 'set-elo') {
+        const elo = Math.max(800, Math.min(2800, parseInt(request.value, 10) || 1600));
+        try {
+            stockfish.postMessage(`setoption name UCI_Elo value ${elo}`);
+        } catch (_) {}
+        if (lastFen) {
+            const active = getActiveColorFromFEN(lastFen);
+            if (active == lastPlayingAs) { processFEN(lastFen); }
+        }
+    }
+    if (request.type === 'set-hash') {
+        const mb = Math.max(16, Math.min(256, parseInt(request.value, 10) || 64));
+        try { stockfish.postMessage(`setoption name Hash value ${mb}`); } catch (_) {}
+    }
+    if (request.type === 'set-ponder') {
+        const enabled = Boolean(request.enabled);
+        try { stockfish.postMessage(`setoption name Ponder value ${enabled ? 'true' : 'false'}`); } catch (_) {}
+    }
+    if (request.type === 'set-autoplay-confidence') {
+        autoMoveConfidencePct = Math.max(0, Math.min(20, parseInt(request.value, 10) || 0));
+    }
 });
+
+// --- Helpers for auto-move gating and pondering ---
+function passesAutoMoveConfidenceGate() {
+    try {
+        // No gating if disabled
+        return (typeof autoMoveConfidencePct === 'number' && autoMoveConfidencePct > 0)
+            ? compareTopTwoPVConfidence(autoMoveConfidencePct)
+            : true;
+    } catch (_) { return true; }
+}
+
+function compareTopTwoPVConfidence(thresholdPct) {
+    if (!Array.isArray(latestMultiPVLines) || latestMultiPVLines.length < 2) return true;
+    const a = latestMultiPVLines[0];
+    const b = latestMultiPVLines[1];
+    if (!a || !b) return true;
+    const aWin = a.wdl && typeof a.wdl.winPct === 'number' ? a.wdl.winPct : null;
+    const bWin = b.wdl && typeof b.wdl.winPct === 'number' ? b.wdl.winPct : null;
+    if (aWin != null && bWin != null) {
+        return (aWin - bWin) >= thresholdPct;
+    }
+    // Fallback to cp difference if WDL unavailable
+    const aCp = a.score && a.score.type === 'cp' ? a.score.value : null;
+    const bCp = b.score && b.score.type === 'cp' ? b.score.value : null;
+    if (aCp != null && bCp != null) {
+        return (aCp - bCp) >= 50; // ~0.5 pawn default guard
+    }
+    return true;
+}
+
+function startPonderIfEnabled(fen) {
+    try {
+        chrome.storage.sync.get({ ponderEnabled: false }, (items) => {
+            if (!items || !items.ponderEnabled) return;
+            try {
+                stockfish.postMessage('stop');
+            } catch (_) {}
+            try {
+                stockfish.postMessage('position fen ' + fen);
+                stockfish.postMessage('go ponder');
+                isPondering = true;
+            } catch (_) { isPondering = false; }
+        });
+    } catch (_) {}
+}

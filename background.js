@@ -3,10 +3,15 @@
 chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     if (request && typeof request.type === 'string' && (
         request.type === 'set-level' ||
-        /* legacy removed */
         request.type === 'set-think-time' ||
         request.type === 'set-auto-move' ||
-        request.type === 'set-multipv'
+        request.type === 'set-multipv' ||
+        request.type === 'set-elo' ||
+        request.type === 'set-elo-enabled' ||
+        request.type === 'set-hash' ||
+        request.type === 'set-ponder' ||
+        request.type === 'set-autoplay-confidence' ||
+        request.type === 'set-minimal-overlay'
     )) {
         try {
             chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {

@@ -40,13 +40,16 @@ function updateCurrentStateUI(level, thinkMs, multiPV) {
 }
 
 function restoreSelections() {
-    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600 }, function (items) {
-        const { engineLevel, engineThinkMs, engineMultiPV, autoMove, autoMoveDelayBaseMs, autoMoveDelayJitterMs } = items;
+    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0, minimalOverlay: false }, function (items) {
+        const { engineLevel, engineThinkMs, engineMultiPV, autoMove, autoMoveDelayBaseMs, autoMoveDelayJitterMs, eloEnabled, eloValue, hashMb, ponderEnabled, autoMoveConfidencePct, minimalOverlay } = items;
         const clampedLevel = String(Math.max(0, Math.min(20, parseInt(engineLevel, 10) || 8)));
         const clampedMs = String(Math.max(200, Math.min(5000, parseInt(engineThinkMs, 10) || 200)));
         const clampedMultiPV = String(Math.max(1, Math.min(5, parseInt(engineMultiPV, 10) || 1)));
         const clampedDelayBase = String(Math.max(0, Math.min(5000, parseInt(autoMoveDelayBaseMs, 10) || 150)));
         const clampedDelayJitter = String(Math.max(0, Math.min(20000, parseInt(autoMoveDelayJitterMs, 10) || 600)));
+        const clampedElo = String(Math.max(800, Math.min(2800, parseInt(eloValue, 10) || 1600)));
+        const clampedHash = String(Math.max(16, Math.min(256, parseInt(hashMb, 10) || 64)));
+        const clampedConf = String(Math.max(0, Math.min(20, parseInt(autoMoveConfidencePct, 10) || 0)));
         $("#level-slider").val(clampedLevel);
         $("#level-slider-value").text(clampedLevel);
         $("#level-elo").text(`~${estimateEloForLevel(clampedLevel)} Elo`);
@@ -54,11 +57,19 @@ function restoreSelections() {
         $("#time-slider-value").text((Number(clampedMs) / 1000).toFixed(1));
         $("#multipv-slider").val(clampedMultiPV);
         $("#multipv-slider-value").text(clampedMultiPV);
+        $("#minimal-overlay-checkbox").prop('checked', Boolean(minimalOverlay));
         $("#auto-move-checkbox").prop('checked', Boolean(autoMove));
         $("#auto-delay-base-slider").val(clampedDelayBase);
         $("#auto-delay-base-value").text(clampedDelayBase);
         $("#auto-delay-jitter-slider").val(clampedDelayJitter);
         $("#auto-delay-jitter-value").text(clampedDelayJitter);
+        $("#elo-enabled").prop('checked', Boolean(eloEnabled));
+        $("#elo-value").val(clampedElo);
+        $("#hash-slider").val(clampedHash);
+        $("#hash-slider-value").text(clampedHash);
+        $("#ponder-enabled").prop('checked', Boolean(ponderEnabled));
+        $("#auto-confidence-slider").val(clampedConf);
+        $("#auto-confidence-value").text(clampedConf);
         updateCurrentStateUI(clampedLevel, clampedMs, clampedMultiPV);
     });
 }
@@ -109,6 +120,13 @@ $(document).ready(function () {
         safeSend({ type: "set-auto-move", enabled: autoMove });
     });
 
+    $("#auto-confidence-slider").on("input change", function () {
+        const v = $(this).val();
+        $("#auto-confidence-value").text(String(v));
+        debouncedSet({ autoMoveConfidencePct: v });
+        safeSend({ type: "set-autoplay-confidence", value: v });
+    });
+
     $("#set-level").click(function () {
         const levelValue = $("#level-slider").val();
         debouncedSet({ engineLevel: levelValue });
@@ -135,5 +153,42 @@ $(document).ready(function () {
         const autoMove = $(this).is(':checked');
         debouncedSet({ autoMove: autoMove });
         safeSend({ type: "set-auto-move", enabled: autoMove });
+    });
+
+    // Minimal overlay toggle
+    $("#minimal-overlay-checkbox").on('change', function () {
+        const enabled = $(this).is(':checked');
+        debouncedSet({ minimalOverlay: enabled });
+        safeSend({ type: "set-minimal-overlay", enabled });
+    });
+
+    // Elo limit controls
+    $("#elo-enabled").on('change', function () {
+        const enabled = $(this).is(':checked');
+        debouncedSet({ eloEnabled: enabled });
+        safeSend({ type: "set-elo-enabled", enabled });
+    });
+    $("#set-elo").click(function () {
+        const elo = $("#elo-value").val();
+        debouncedSet({ eloValue: elo });
+        safeSend({ type: "set-elo", value: elo });
+    });
+
+    // Hash control
+    $("#hash-slider").on("input change", function () {
+        const v = $(this).val();
+        $("#hash-slider-value").text(String(v));
+    });
+    $("#set-hash").click(function () {
+        const v = $("#hash-slider").val();
+        debouncedSet({ hashMb: v });
+        safeSend({ type: "set-hash", value: v });
+    });
+
+    // Ponder toggle
+    $("#ponder-enabled").on('change', function () {
+        const enabled = $(this).is(':checked');
+        debouncedSet({ ponderEnabled: enabled });
+        safeSend({ type: "set-ponder", enabled });
     });
 });

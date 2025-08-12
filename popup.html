@@ -34,7 +34,51 @@
                     </div>
                     <input type="range" min="1" max="5" step="1" id="multipv-slider" value="1" style="width: 100%;" />
                     <button id="set-multipv">Set</button>
+                    <label style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" id="minimal-overlay-checkbox" />
+                        <span>Minimal mode (PV1 only)</span>
+                    </label>
                 </div>
+            </div>
+        </div>
+        <div class="eloLimit" style="margin-top: 12px;">
+            <div class="title">
+                <span>Elo-limited strength</span>
+            </div>
+            <div class="othersettings-choice" style="display: flex; flex-direction: column; gap: 8px;">
+                <label style="display: flex; align-items: center; gap: 8px;">
+                    <input type="checkbox" id="elo-enabled" />
+                    <span>Limit strength by Elo</span>
+                </label>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>Elo:</span>
+                    <input type="number" id="elo-value" min="800" max="2800" step="50" value="1600" style="width: 100%;" />
+                    <button id="set-elo">Apply</button>
+                </div>
+            </div>
+        </div>
+        <div class="engineMemory" style="margin-top: 12px;">
+            <div class="title">
+                <span>Engine memory (Hash)</span>
+            </div>
+            <div class="othersettings-choice" style="display: flex; flex-direction: column; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>Hash:</span>
+                    <input type="range" min="16" max="256" step="16" id="hash-slider" value="64" style="flex: 1;" />
+                    <span><span id="hash-slider-value">64</span> MB</span>
+                </div>
+                <button id="set-hash">Apply</button>
+            </div>
+        </div>
+        <div class="ponderSettings" style="margin-top: 12px;">
+            <div class="title">
+                <span>Ponder</span>
+            </div>
+            <div class="othersettings-choice" style="display: flex; flex-direction: column; gap: 8px;">
+                <label style="display: flex; align-items: center; gap: 8px;">
+                    <input type="checkbox" id="ponder-enabled" />
+                    <span>Think during opponent's turn</span>
+                </label>
             </div>
         </div>
         <div class="depthSettings">
@@ -60,6 +104,11 @@
                     <input type="checkbox" id="auto-move-checkbox" />
                     <span>Play best move automatically</span>
                 </label>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>Confidence gate:</span>
+                    <input type="range" min="0" max="20" step="1" id="auto-confidence-slider" value="0" style="flex: 1;" />
+                    <span><span id="auto-confidence-value">0</span>%</span>
+                </div>
                 <div style="display: flex; align-items: center; gap: 8px;">
                     <span>Base delay:</span>
                     <input type="range" min="0" max="1500" step="50" id="auto-delay-base-slider" value="150" style="flex: 1;" />
