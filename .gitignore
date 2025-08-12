@@ -1,0 +1,24 @@
+# Node / bridge artifacts
+bridge/node_modules/
+bridge/npm-debug.log*
+bridge/yarn-error.log*
+bridge/package-lock.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor settings
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+debug.log
+
+# Extension build zips
+dist/
+release/*.zip
+
+

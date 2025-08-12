@@ -9,7 +9,7 @@ var rank = ["a", "b", "c", "d", "e", "f", "g", "h"];
 var rankBlack = ["h", "g", "f", "e", "d", "c", "b", "a"];
 var point = {};
 
-let stockfish = null;
+let stockfish = null; // can be a Web Worker (wasm) or a WebSocket wrapper
 let selectedLevel = "8";
 let selectedThinkMs = 200; // default 200ms
 let autoMoveEnabled = false;
@@ -38,17 +38,81 @@ function runWhenEngineReady(callback) {
         }
     } catch (_) {}
 }
+function createWebSocketEngine(url) {
+    const ws = new WebSocket(url);
+    const listeners = { message: [], error: [] };
+    const sendQueue = [];
+    let isOpen = false;
+    let onmessage = null;
+    let onerror = null;
+    let onmessageerror = null;
+
+    function flushQueue() {
+        try {
+            while (sendQueue.length > 0 && isOpen) {
+                const msg = sendQueue.shift();
+                ws.send(msg);
+            }
+        } catch (_) {}
+    }
+
+    ws.addEventListener('open', () => {
+        isOpen = true;
+        flushQueue();
+    });
+    ws.addEventListener('message', (ev) => {
+        try {
+            const data = typeof ev.data === 'string' ? ev.data : '';
+            if (typeof onmessage === 'function') onmessage({ data });
+            for (const fn of listeners.message) { try { fn({ data }); } catch (_) {} }
+        } catch (_) {}
+    });
+    ws.addEventListener('error', (err) => {
+        try {
+            if (typeof onerror === 'function') onerror(err);
+            for (const fn of listeners.error) { try { fn(err); } catch (_) {} }
+        } catch (_) {}
+    });
+    ws.addEventListener('close', () => {
+        isOpen = false;
+    });
+
+    return {
+        postMessage(cmd) {
+            try {
+                const s = String(cmd);
+                if (isOpen) ws.send(s); else sendQueue.push(s);
+            } catch (_) {}
+        },
+        terminate() {
+            try { ws.close(); } catch (_) {}
+        },
+        addEventListener(type, fn) {
+            if (type === 'message') listeners.message.push(fn);
+            if (type === 'error') listeners.error.push(fn);
+        },
+        set onmessage(fn) { onmessage = fn; },
+        get onmessage() { return onmessage; },
+        set onerror(fn) { onerror = fn; },
+        get onerror() { return onerror; },
+        set onmessageerror(fn) { onmessageerror = fn; },
+        get onmessageerror() { return onmessageerror; },
+    };
+}
+
 async function loadStockfish() {
-    // Charger le fichier Stockfish.js en tant que texte
-    const response = await fetch(chrome.runtime.getURL('lib/stockfish.js'));
-    const stockfishScript = await response.text();
+    // Connect to native Stockfish via local WebSocket bridge
+    // Default URL can be overridden by storage key 'engineWsUrl'
+    let targetUrl = 'ws://127.0.0.1:8181';
+    try {
+        const obj = await new Promise((resolve) => {
+            try { chrome.storage.sync.get({ engineWsUrl: targetUrl }, (items) => resolve(items)); }
+            catch (_) { resolve({ engineWsUrl: targetUrl }); }
+        });
+        if (obj && typeof obj.engineWsUrl === 'string') targetUrl = obj.engineWsUrl;
+    } catch (_) {}
 
-    // Créer un Blob avec le script
-    const blob = new Blob([stockfishScript], { type: 'application/javascript' });
-    const blobURL = URL.createObjectURL(blob);
-
-    // Lancer le Web Worker avec le Blob URL
-    stockfish = new Worker(blobURL);
+    stockfish = createWebSocketEngine(targetUrl);
 
     stockfish.postMessage('uci');
     // Detect options reported by the engine
@@ -75,8 +139,8 @@ async function loadStockfish() {
     let ponderEnabled = Boolean(storedPonder);
     let autoMoveConfidencePct = Math.max(0, Math.min(20, parseInt(storedConf, 10) || 0));
 
-    // Sensible threads default; only apply if supported
-    const threadsDefault = Math.max(1, Math.min(2, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 1));
+    // Use all logical cores by default on native engine; only apply if supported by engine
+    const threadsDefault = Math.max(1, Math.min(32, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 1));
     let selectedThreads = threadsDefault;
 
     const applyAllEngineOptions = () => {
