@@ -18,6 +18,8 @@ let autoDelayJitterMs = 600;
 let lastFen = null; // Remember last known position so we can re-evaluate on mode changes
 let lastAutoMovedFen = null; // Avoid duplicate auto-moves on same position
 let selectedMultiPV = 1; // number of candidate lines
+// Unified time usage mode: 'fixed' (use movetime) or 'adaptive' (use game clocks)
+let timeMode = 'adaptive';
 // cache of parsed multi PVs for current position
 // Each entry: { idx: number, move: string, moves: string[], score: { type: 'cp'|'mate', value: number }, wdl?: { w:number, d:number, l:number, winPct:number } }
 let latestMultiPVLines = [];
@@ -30,6 +32,8 @@ let lastSearchStats = { depth: 0, seldepth: 0, nps: 0, nodes: 0, hashfull: 0, tb
 // Manage engine readiness using UCI isready/readyok
 let pendingReadyCallbacks = [];
 let minimalOverlay = false; // when true, show only PV1 in overlay
+// Confidence gate for auto-move (percent difference in WDL between PV1 and PV2)
+let autoMoveConfidencePct = 0;
 function runWhenEngineReady(callback) {
     try {
         if (typeof callback === 'function') {
@@ -121,11 +125,11 @@ async function loadStockfish() {
     let hasThreadsOption = false;
     let seenUciOk = false;
     // Load saved preferences before setting options
-    const { engineLevel = "8", engineThinkMs = 200, engineMultiPV = 1, autoMove = false, autoMoveDelayBaseMs: storedBase = 150, autoMoveDelayJitterMs: storedJitter = 600, eloEnabled: storedEloEnabled = false, eloValue: storedElo = 1600, hashMb: storedHash = 64, ponderEnabled: storedPonder = false, autoMoveConfidencePct: storedConf = 0, moveOverheadMs: storedOverhead = 80, slowMoverPercent: storedSlowMover = 100, threads: storedThreads = 0 } = await new Promise((resolve) => {
+    const { engineLevel = "8", engineThinkMs = 200, engineMultiPV = 1, autoMove = false, autoMoveDelayBaseMs: storedBase = 150, autoMoveDelayJitterMs: storedJitter = 600, eloEnabled: storedEloEnabled = false, eloValue: storedElo = 1600, hashMb: storedHash = 64, ponderEnabled: storedPonder = false, autoMoveConfidencePct: storedConf = 0, moveOverheadMs: storedOverhead = 80, slowMoverPercent: storedSlowMover = 100, threads: storedThreads = 0, timeMode: storedTimeMode = 'adaptive' } = await new Promise((resolve) => {
         try {
-            chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0, moveOverheadMs: 80, slowMoverPercent: 100, threads: 0 }, (items) => resolve(items));
+            chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0, moveOverheadMs: 80, slowMoverPercent: 100, threads: 0, timeMode: 'adaptive' }, (items) => resolve(items));
         } catch (e) {
-            resolve({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0, moveOverheadMs: 80, slowMoverPercent: 100, threads: 0 });
+            resolve({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0, moveOverheadMs: 80, slowMoverPercent: 100, threads: 0, timeMode: 'adaptive' });
         }
     });
     // Clamp possible stored values to 0..20 range
@@ -139,9 +143,10 @@ async function loadStockfish() {
     let eloValue = Math.max(1320, Math.min(3190, parseInt(storedElo, 10) || 1600));
     let hashMb = Math.max(16, Math.min(256, parseInt(storedHash, 10) || 64));
     let ponderEnabled = Boolean(storedPonder);
-    let autoMoveConfidencePct = Math.max(0, Math.min(20, parseInt(storedConf, 10) || 0));
+    autoMoveConfidencePct = Math.max(0, Math.min(20, parseInt(storedConf, 10) || 0));
     let moveOverheadMs = Math.max(0, Math.min(5000, parseInt(storedOverhead, 10) || 80));
     let slowMoverPercent = Math.max(10, Math.min(1000, parseInt(storedSlowMover, 10) || 100));
+    timeMode = (String(storedTimeMode) === 'fixed' || String(storedTimeMode) === 'adaptive') ? String(storedTimeMode) : 'adaptive';
 
     // Use all logical cores by default on native engine; only apply if supported by engine
     const threadsDefault = Math.max(1, Math.min(32, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 1));
@@ -746,9 +751,10 @@ function processFEN(fen) {
         // Reset cached PVs for this position
         latestMultiPVLines = new Array(Math.max(1, selectedMultiPV));
         stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
-        // Use UCI clock fields if we have valid clocks; fallback to movetime otherwise
+        // Choose timing mode based on user selection and clock availability
         const c = lastClocks && lastClocks.ok ? lastClocks : null;
-        if (c && typeof c.wtime === 'number' && typeof c.btime === 'number') {
+        const useClock = (timeMode === 'adaptive') && c && typeof c.wtime === 'number' && typeof c.btime === 'number';
+        if (useClock) {
             const winc = typeof c.winc === 'number' ? c.winc : 0;
             const binc = typeof c.binc === 'number' ? c.binc : 0;
             try {
@@ -782,7 +788,8 @@ function processFEN(fen) {
                     stockfish.postMessage('position fen ' + lastFen);
                     stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
                     const c = lastClocks && lastClocks.ok ? lastClocks : null;
-                    if (c && typeof c.wtime === 'number' && typeof c.btime === 'number') {
+                    const useClock = (timeMode === 'adaptive') && c && typeof c.wtime === 'number' && typeof c.btime === 'number';
+                    if (useClock) {
                         const winc = typeof c.winc === 'number' ? c.winc : 0;
                         const binc = typeof c.binc === 'number' ? c.binc : 0;
                         stockfish.postMessage(`go wtime ${c.wtime} btime ${c.btime} winc ${winc} binc ${binc}`);
@@ -852,14 +859,6 @@ function reinitializeBoard(gameInfo) {
         if (document.getElementById("canvas")) {
             document.getElementById("canvas").remove();
         }
-
-        // Notify engine of a new game and clear hash for fresh searches
-        try {
-            if (stockfish) {
-                stockfish.postMessage('ucinewgame');
-                stockfish.postMessage('setoption name Clear Hash value true');
-            }
-        } catch (_) {}
 
         // **Reinitialize the board based on color**
         if (gameInfo.playingAs === 1) {
@@ -974,6 +973,14 @@ window.addEventListener('message', (event) => {
         };
 
         lastFen = gameInfo.fen;
+        // Always reset engine state on new game
+        try {
+            if (stockfish) {
+                stockfish.postMessage('stop');
+                stockfish.postMessage('ucinewgame');
+                stockfish.postMessage('setoption name Clear Hash value true');
+            }
+        } catch (_) {}
         reinitializeBoard(gameInfo);
         if (gameInfo.clocks && typeof gameInfo.clocks === 'object') {
             lastClocks = Object.assign({ ok: false, winc: 0, binc: 0 }, gameInfo.clocks);
@@ -997,7 +1004,7 @@ window.addEventListener('message', (event) => {
             lastMoveUci: event.data.gameInfo.lastMoveUci || null,
         };
 
-        $("#canvas").clearCanvas();
+        try { $("#canvas").clearCanvas(); } catch (_) {}
 
         lastFen = gameInfo.fen;
         reinitializeBoard(gameInfo);
@@ -1075,6 +1082,15 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
             stockfish.postMessage(`setoption name Slow Mover value ${sm}`);
         } catch (_) {}
     }
+    if (request.type === 'set-time-mode') {
+        const mode = String(request.mode) === 'fixed' ? 'fixed' : 'adaptive';
+        timeMode = mode;
+        // Re-evaluate immediately if it's our turn
+        if (lastFen) {
+            const active = getActiveColorFromFEN(lastFen);
+            if (active == lastPlayingAs) { processFEN(lastFen); }
+        }
+    }
     if (request.type === 'run-calibrate') {
         try { runCalibrationInIsolatedEngine(); } catch (_) {}
     }
@@ -1120,6 +1136,18 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     }
     if (request.type === 'set-autoplay-confidence') {
         autoMoveConfidencePct = Math.max(0, Math.min(20, parseInt(request.value, 10) || 0));
+        // Ensure MultiPV >= 2 for meaningful gating when confidence > 0
+        if (autoMoveConfidencePct > 0 && selectedMultiPV < 2) {
+            selectedMultiPV = 2;
+            try {
+                stockfish.postMessage('setoption name MultiPV value 2');
+                chrome.storage && chrome.storage.sync && chrome.storage.sync.set({ engineMultiPV: 2 });
+            } catch (_) {}
+            if (lastFen) {
+                const active = getActiveColorFromFEN(lastFen);
+                if (active == lastPlayingAs) { processFEN(lastFen); }
+            }
+        }
     }
     if (request.type === 'set-minimal-overlay') {
         minimalOverlay = Boolean(request.enabled);

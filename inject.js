@@ -143,14 +143,40 @@ function sampleLastMoveUci(element) {
     return null;
 }
 
+function extractFullmoveNumber(fen) {
+    try {
+        const parts = String(fen || '').trim().split(/\s+/);
+        if (parts.length >= 6) {
+            const n = parseInt(parts[5], 10);
+            if (!Number.isNaN(n)) return n;
+        }
+    } catch (_) {}
+    return null;
+}
+
+function looksLikeInitialPosition(fen) {
+    try {
+        // Heuristic: end with " 0 1" for standard initial position
+        return /\s0\s+1$/.test(String(fen || '').trim());
+    } catch (_) { return false; }
+}
+
 function announceIfFenChanged(deferMs = 0) {
     const doAnnounce = () => {
         try {
             if (!currentElement || !currentElement.board || !currentElement.board.game) return;
             const gi = getGameInfo(currentElement);
             if (gi.fen && gi.fen !== lastAnnouncedFen) {
+                const prev = lastAnnouncedFen;
+                const prevMove = extractFullmoveNumber(prev);
+                const currMove = extractFullmoveNumber(gi.fen);
+                const isNewGame = (currMove === 1 && (prevMove == null || (typeof prevMove === 'number' && prevMove > 1))) || looksLikeInitialPosition(gi.fen);
                 lastAnnouncedFen = gi.fen;
-                window.postMessage({ type: 'move_made', gameInfo: gi }, '*');
+                if (isNewGame) {
+                    window.postMessage({ type: 'GET_INIT_GAME_INFO', gameInfo: gi }, '*');
+                } else {
+                    window.postMessage({ type: 'move_made', gameInfo: gi }, '*');
+                }
             }
         } catch (_) {}
     };

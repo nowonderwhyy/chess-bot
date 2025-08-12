@@ -14,6 +14,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         request.type === 'set-minimal-overlay' ||
         request.type === 'set-threads' ||
         request.type === 'set-time-mgmt' ||
+        request.type === 'set-time-mode' ||
         request.type === 'run-calibrate'
     )) {
         try {

@@ -64,15 +64,23 @@
           <input type="range" min="1" max="32" step="1" id="threads-slider" value="1" />
         </div>
         <div class="card">
-          <div class="header"><div class="title">Time management</div></div>
+          <div class="header"><div class="title">Engine time usage</div></div>
           <div class="row">
+            <label style="margin-right:12px"><input type="radio" name="time-mode" id="time-mode-fixed" value="fixed"/> Fixed — <b><span id="time-slider-value">0.2</span></b>s per move</label>
+            <button id="set-time" class="right">Apply</button>
+          </div>
+          <input type="range" min="200" max="5000" step="100" id="time-slider" value="200" />
+          <div class="row" style="margin-top:8px">
+            <label><input type="radio" name="time-mode" id="time-mode-adaptive" value="adaptive"/> Adaptive — use game clock</label>
+          </div>
+          <div class="row" style="margin-top:6px">
             <div class="col subtle">Move Overhead <b id="overhead-slider-value">80</b>ms</div>
             <div class="right subtle">Slow Mover <b id="slowmover-slider-value">100</b>%</div>
           </div>
           <input type="range" min="0" max="5000" step="10" id="overhead-slider" value="80" />
           <input type="range" min="10" max="1000" step="10" id="slowmover-slider" value="100" />
           <button id="apply-time-mgmt" class="secondary">Apply</button>
-          <div class="hint">Overhead protects from flagging; Slow Mover adjusts aggressiveness of time use.</div>
+          <div class="hint">In Adaptive mode, Stockfish manages the clock; Overhead and Slow Mover apply. In Fixed mode, a constant per‑move time is used.</div>
         </div>
         <details class="card">
           <summary><span class="chev">▶</span> Calibration</summary>
@@ -84,14 +92,7 @@
           <div class="header"><div class="title">Ponder</div></div>
           <label><input type="checkbox" id="ponder-enabled"/> Think during opponent’s turn</label>
         </div>
-        <div class="card">
-          <div class="header"><div class="title">Think time per move</div></div>
-          <div class="row">
-            <div class="col subtle">Think: <b id="time-slider-value">0.2</b>s (0.2–5.0s)</div>
-            <button id="set-time" class="right">Apply</button>
-          </div>
-          <input type="range" min="200" max="5000" step="100" id="time-slider" value="200" />
-        </div>
+        
         <details class="card">
           <summary><span class="chev">▶</span> Auto‑move (experimental)</summary>
           <label><input type="checkbox" id="auto-move-checkbox"/> Play best move automatically</label>

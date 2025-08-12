@@ -38,12 +38,13 @@ function formatNps(n) {
     return String(n);
 }
 
-function updateCurrentStateUI(level, thinkMs, multiPV) {
+function updateCurrentStateUI(level, thinkMs, multiPV, mode) {
     const seconds = (Number(thinkMs) / 1000).toFixed(1);
     const elo = estimateEloForLevel(level);
     $("#current-level").text(level);
     $("#current-level-elo").text(`~${elo} Elo`);
-    $("#current-mode").text(seconds + "s");
+    const modeStr = mode === 'adaptive' ? 'Adaptive' : `${seconds}s`;
+    $("#current-mode").text(modeStr);
     if (multiPV) { $("#current-multipv").text(String(multiPV)); }
     // Try reflect live engine stats if available
     try {
@@ -59,8 +60,8 @@ function updateCurrentStateUI(level, thinkMs, multiPV) {
 }
 
 function restoreSelections() {
-    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0, minimalOverlay: false, threads: 0, moveOverheadMs: 80, slowMoverPercent: 100 }, function (items) {
-        const { engineLevel, engineThinkMs, engineMultiPV, autoMove, autoMoveDelayBaseMs, autoMoveDelayJitterMs, eloEnabled, eloValue, hashMb, ponderEnabled, autoMoveConfidencePct, minimalOverlay, threads, moveOverheadMs, slowMoverPercent } = items;
+    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0, minimalOverlay: false, threads: 0, moveOverheadMs: 80, slowMoverPercent: 100, timeMode: 'adaptive' }, function (items) {
+        const { engineLevel, engineThinkMs, engineMultiPV, autoMove, autoMoveDelayBaseMs, autoMoveDelayJitterMs, eloEnabled, eloValue, hashMb, ponderEnabled, autoMoveConfidencePct, minimalOverlay, threads, moveOverheadMs, slowMoverPercent, timeMode } = items;
         const clampedLevel = String(Math.max(0, Math.min(20, parseInt(engineLevel, 10) || 8)));
         const clampedMs = String(Math.max(200, Math.min(5000, parseInt(engineThinkMs, 10) || 200)));
         const clampedMultiPV = String(Math.max(1, Math.min(5, parseInt(engineMultiPV, 10) || 1)));
@@ -71,13 +72,18 @@ function restoreSelections() {
         const clampedConf = String(Math.max(0, Math.min(20, parseInt(autoMoveConfidencePct, 10) || 0)));
         const hwThreads = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 1;
         const clampedThreads = String(Math.max(1, Math.min(32, parseInt(threads, 10) || hwThreads)));
-        const clampedOverhead = String(Math.max(0, Math.min(500, parseInt(moveOverheadMs, 10) || 80)));
+        const clampedOverhead = String(Math.max(0, Math.min(5000, parseInt(moveOverheadMs, 10) || 80)));
         const clampedSlowMover = String(Math.max(10, Math.min(1000, parseInt(slowMoverPercent, 10) || 100)));
         $("#level-slider").val(clampedLevel);
         $("#level-slider-value").text(clampedLevel);
         $("#level-elo").text(`~${estimateEloForLevel(clampedLevel)} Elo`);
         $("#time-slider").val(clampedMs);
         $("#time-slider-value").text((Number(clampedMs) / 1000).toFixed(1));
+        if (String(timeMode) === 'fixed') {
+            $("#time-mode-fixed").prop('checked', true);
+        } else {
+            $("#time-mode-adaptive").prop('checked', true);
+        }
         $("#multipv-slider").val(clampedMultiPV);
         $("#multipv-slider-value").text(clampedMultiPV);
         $("#minimal-overlay-checkbox").prop('checked', Boolean(minimalOverlay));
@@ -99,7 +105,7 @@ function restoreSelections() {
         $("#overhead-slider-value").text(clampedOverhead);
         $("#slowmover-slider").val(clampedSlowMover);
         $("#slowmover-slider-value").text(clampedSlowMover);
-        updateCurrentStateUI(clampedLevel, clampedMs, clampedMultiPV);
+        updateCurrentStateUI(clampedLevel, clampedMs, clampedMultiPV, String(timeMode) === 'fixed' ? 'fixed' : 'adaptive');
     });
 }
 
@@ -116,6 +122,12 @@ $(document).ready(function () {
     $("#time-slider").on("input change", function () {
         const ms = $(this).val();
         $("#time-slider-value").text((Number(ms) / 1000).toFixed(1));
+    });
+    $("input[name='time-mode']").on('change', function () {
+        const mode = $("input[name='time-mode']:checked").val();
+        chrome.storage.sync.set({ timeMode: mode });
+        try { chrome.runtime.sendMessage({ type: 'set-time-mode', mode }); } catch (_) {}
+        updateCurrentStateUI($("#level-slider").val(), $("#time-slider").val(), $("#multipv-slider").val(), mode);
     });
 
     $("#multipv-slider").on("input change", function () {
@@ -167,6 +179,17 @@ $(document).ready(function () {
         $("#auto-confidence-value").text(String(v));
         debouncedSet({ autoMoveConfidencePct: v });
         safeSend({ type: "set-autoplay-confidence", value: v });
+        // If confidence > 0 ensure MultiPV >= 2 to enable gating
+        const num = parseInt(v, 10) || 0;
+        if (num > 0) {
+            const mpv = parseInt($("#multipv-slider").val(), 10) || 1;
+            if (mpv < 2) {
+                $("#multipv-slider").val('2');
+                $("#multipv-slider-value").text('2');
+                debouncedSet({ engineMultiPV: 2 });
+                safeSend({ type: "set-multipv", value: 2 });
+            }
+        }
     });
 
     $("#set-level").click(function () {
@@ -179,7 +202,7 @@ $(document).ready(function () {
     $("#set-time").click(function () {
         const thinkMs = $("#time-slider").val();
         debouncedSet({ engineThinkMs: thinkMs });
-        updateCurrentStateUI($("#level-slider").val(), thinkMs, $("#multipv-slider").val());
+        updateCurrentStateUI($("#level-slider").val(), thinkMs, $("#multipv-slider").val(), $("input[name='time-mode']:checked").val());
         safeSend({ type: "set-think-time", radioValue: thinkMs });
     });
 
