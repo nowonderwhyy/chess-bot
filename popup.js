@@ -30,6 +30,14 @@ function estimateEloForLevel(levelNumber) {
     return table[lvl];
 }
 
+function formatNps(n) {
+    if (!n || n <= 0) return '0';
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(2) + 'K';
+    return String(n);
+}
+
 function updateCurrentStateUI(level, thinkMs, multiPV) {
     const seconds = (Number(thinkMs) / 1000).toFixed(1);
     const elo = estimateEloForLevel(level);
@@ -37,11 +45,22 @@ function updateCurrentStateUI(level, thinkMs, multiPV) {
     $("#current-level-elo").text(`~${elo} Elo`);
     $("#current-mode").text(seconds + "s");
     if (multiPV) { $("#current-multipv").text(String(multiPV)); }
+    // Try reflect live engine stats if available
+    try {
+        chrome.storage.local.get({ lastEngineStats: null }, (items) => {
+            const s = items && items.lastEngineStats ? items.lastEngineStats : null;
+            if (!s) return;
+            if (typeof s.depth === 'number') { $("#current-depth").text(String(s.depth)); }
+            if (typeof s.nps === 'number') { $("#current-nps").text(formatNps(s.nps)); }
+            if (typeof s.tbhits === 'number' && s.tbhits > 0) { $("#current-tb").text(' · TB'); }
+            else { $("#current-tb").text(''); }
+        });
+    } catch (_) {}
 }
 
 function restoreSelections() {
-    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0, minimalOverlay: false }, function (items) {
-        const { engineLevel, engineThinkMs, engineMultiPV, autoMove, autoMoveDelayBaseMs, autoMoveDelayJitterMs, eloEnabled, eloValue, hashMb, ponderEnabled, autoMoveConfidencePct, minimalOverlay } = items;
+    chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0, minimalOverlay: false, threads: 0, moveOverheadMs: 80, slowMoverPercent: 100 }, function (items) {
+        const { engineLevel, engineThinkMs, engineMultiPV, autoMove, autoMoveDelayBaseMs, autoMoveDelayJitterMs, eloEnabled, eloValue, hashMb, ponderEnabled, autoMoveConfidencePct, minimalOverlay, threads, moveOverheadMs, slowMoverPercent } = items;
         const clampedLevel = String(Math.max(0, Math.min(20, parseInt(engineLevel, 10) || 8)));
         const clampedMs = String(Math.max(200, Math.min(5000, parseInt(engineThinkMs, 10) || 200)));
         const clampedMultiPV = String(Math.max(1, Math.min(5, parseInt(engineMultiPV, 10) || 1)));
@@ -50,6 +69,10 @@ function restoreSelections() {
         const clampedElo = String(Math.max(800, Math.min(2800, parseInt(eloValue, 10) || 1600)));
         const clampedHash = String(Math.max(16, Math.min(256, parseInt(hashMb, 10) || 64)));
         const clampedConf = String(Math.max(0, Math.min(20, parseInt(autoMoveConfidencePct, 10) || 0)));
+        const hwThreads = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 1;
+        const clampedThreads = String(Math.max(1, Math.min(32, parseInt(threads, 10) || hwThreads)));
+        const clampedOverhead = String(Math.max(0, Math.min(500, parseInt(moveOverheadMs, 10) || 80)));
+        const clampedSlowMover = String(Math.max(10, Math.min(1000, parseInt(slowMoverPercent, 10) || 100)));
         $("#level-slider").val(clampedLevel);
         $("#level-slider-value").text(clampedLevel);
         $("#level-elo").text(`~${estimateEloForLevel(clampedLevel)} Elo`);
@@ -70,6 +93,12 @@ function restoreSelections() {
         $("#ponder-enabled").prop('checked', Boolean(ponderEnabled));
         $("#auto-confidence-slider").val(clampedConf);
         $("#auto-confidence-value").text(clampedConf);
+        $("#threads-slider").val(clampedThreads);
+        $("#threads-slider-value").text(clampedThreads);
+        $("#overhead-slider").val(clampedOverhead);
+        $("#overhead-slider-value").text(clampedOverhead);
+        $("#slowmover-slider").val(clampedSlowMover);
+        $("#slowmover-slider-value").text(clampedSlowMover);
         updateCurrentStateUI(clampedLevel, clampedMs, clampedMultiPV);
     });
 }
@@ -92,6 +121,19 @@ $(document).ready(function () {
     $("#multipv-slider").on("input change", function () {
         const v = $(this).val();
         $("#multipv-slider-value").text(String(v));
+    });
+
+    $("#threads-slider").on("input change", function () {
+        const v = $(this).val();
+        $("#threads-slider-value").text(String(v));
+    });
+    $("#overhead-slider").on("input change", function () {
+        const v = $(this).val();
+        $("#overhead-slider-value").text(String(v));
+    });
+    $("#slowmover-slider").on("input change", function () {
+        const v = $(this).val();
+        $("#slowmover-slider-value").text(String(v));
     });
 
     // Debounce helpers to reduce storage write rate and avoid message errors
@@ -148,6 +190,19 @@ $(document).ready(function () {
         safeSend({ type: "set-multipv", value: mpv });
     });
 
+    $("#set-threads").click(function () {
+        const v = $("#threads-slider").val();
+        debouncedSet({ threads: v });
+        safeSend({ type: "set-threads", value: v });
+    });
+
+    $("#apply-time-mgmt").click(function () {
+        const ov = $("#overhead-slider").val();
+        const sm = $("#slowmover-slider").val();
+        debouncedSet({ moveOverheadMs: ov, slowMoverPercent: sm });
+        safeSend({ type: "set-time-mgmt", overhead: ov, slowmover: sm });
+    });
+
     // Apply immediately when toggling checkbox
     $("#auto-move-checkbox").on('change', function () {
         const autoMove = $(this).is(':checked');
@@ -191,4 +246,27 @@ $(document).ready(function () {
         debouncedSet({ ponderEnabled: enabled });
         safeSend({ type: "set-ponder", enabled });
     });
+
+    // Calibration
+    $("#run-calibrate").click(function () {
+        $("#calibration-output").text('Running speedtest...');
+        safeSend({ type: "run-calibrate" });
+        // Poll calibration output without blocking main engine
+        const start = Date.now();
+        const tick = () => {
+            chrome.storage.local.get({ calibrationOutput: '' }, (items) => {
+                if (items && items.calibrationOutput) {
+                    $("#calibration-output").text(items.calibrationOutput);
+                    return;
+                }
+                if (Date.now() - start < 16000) setTimeout(tick, 400);
+            });
+        };
+        setTimeout(tick, 500);
+    });
+    // Refresh stats periodically while popup is open
+    const statsInterval = setInterval(() => {
+        updateCurrentStateUI($("#level-slider").val(), $("#time-slider").val(), $("#multipv-slider").val());
+    }, 1500);
+    window.addEventListener('beforeunload', () => clearInterval(statsInterval));
 });

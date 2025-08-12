@@ -32,6 +32,29 @@ Environment variables you can set before launching:
 - `STOCKFISH_BIN` — path to `stockfish-windows-x86-64-avx2.exe`
 - `STOCKFISH_WS_PORT` — port to listen on (default 8181)
 
+### Syzygy tablebases and custom NNUE nets
+
+Optional environment variables supported by the bridge:
+
+- `SYZYGY_PATH` — directory containing Syzygy tablebases
+- `SYZYGY_PROBE_LIMIT` — optional max pieces to probe
+- `EVALFILE` — path to a custom NNUE network file
+
+Example usage:
+
+```
+set SYZYGY_PATH=D:\\tb\\syzygy
+set SYZYGY_PROBE_LIMIT=7
+set EVALFILE=C:\\nets\\nn-62ef826d1a6d.nnue
+node bridge\\server.js
+```
+
+When tablebases are active, the overlay badges add a small “TB” marker when `tbhits` appear in engine info. Exact TB results may show as very large evals (e.g., 200.00) by design.
+
+### Performance tip: Large Pages
+
+On Windows, enabling the OS privilege “Lock pages in memory” (Large Pages) for the engine can yield 5–10% NPS improvements (sometimes more). Consult Stockfish docs and OS policy settings.
+
 ## Build and package the extension
 
 This repo is a plain MV3 extension. There is no bundler step; to produce a zip suitable for loading or publishing:

@@ -11,7 +11,10 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         request.type === 'set-hash' ||
         request.type === 'set-ponder' ||
         request.type === 'set-autoplay-confidence' ||
-        request.type === 'set-minimal-overlay'
+        request.type === 'set-minimal-overlay' ||
+        request.type === 'set-threads' ||
+        request.type === 'set-time-mgmt' ||
+        request.type === 'run-calibrate'
     )) {
         try {
             chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {

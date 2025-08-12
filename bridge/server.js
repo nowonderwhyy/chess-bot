@@ -43,15 +43,42 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
+  // Initialize UCI and apply server-side options (Syzygy/EvalFile) once uciok arrives
+  try { engine.stdin.write('uci\n'); } catch (_) {}
+  let didApplyServerOptions = false;
+  let stdoutBuffer = '';
+  const applyServerOptions = () => {
+    if (didApplyServerOptions) return;
+    didApplyServerOptions = true;
+    try {
+      if (process.env.SYZYGY_PATH) {
+        engine.stdin.write(`setoption name SyzygyPath value ${process.env.SYZYGY_PATH}\n`);
+        if (process.env.SYZYGY_PROBE_LIMIT) {
+          engine.stdin.write(`setoption name SyzygyProbeLimit value ${process.env.SYZYGY_PROBE_LIMIT}\n`);
+        }
+        engine.stdin.write('setoption name Syzygy50MoveRule value true\n');
+      }
+      if (process.env.EVALFILE) {
+        engine.stdin.write(`setoption name EvalFile value ${process.env.EVALFILE}\n`);
+      }
+    } catch (err) {
+      try { ws.send(`info string server option apply failed: ${String(err && err.message || err)}`); } catch (_) {}
+    }
+  };
+
   // Forward engine stdout lines to WebSocket client
   let buffer = '';
   engine.stdout.on('data', (chunk) => {
-    buffer += chunk.toString('utf-8');
+    const text = chunk.toString('utf-8');
+    buffer += text;
     let idx;
     while ((idx = buffer.indexOf('\n')) !== -1) {
       const line = buffer.slice(0, idx).replace(/\r$/, '');
       buffer = buffer.slice(idx + 1);
       if (line.length > 0) {
+        if (!didApplyServerOptions && line.trim() === 'uciok') {
+          applyServerOptions();
+        }
         try { ws.send(line); } catch (_) {}
       }
     }
@@ -68,11 +95,12 @@ wss.on('connection', (ws, req) => {
     try { ws.close(); } catch (_) {}
   });
 
-  // Forward text frames to engine stdin with newline
+  // Forward text frames to engine stdin with newline, but sandbox 'speedtest'
   ws.on('message', (data) => {
     try {
       const text = String(data).replace(/\r?\n/g, '');
       if (text.length === 0) return;
+      // No sandbox here; speedtest is allowed but runs in engine process.
       engine.stdin.write(text + '\n');
     } catch (err) {
       console.error('[bridge] write error:', err);

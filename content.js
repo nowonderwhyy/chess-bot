@@ -25,6 +25,8 @@ let lastDrawAt = 0; // throttle PV arrow draws
 let currentSearchToken = 0; // watchdog token for engine searches
 let bestmoveTimerId = null; // watchdog timer id
 let boardResizeObserver = null; // keep canvas aligned with board
+// Last known search stats for popup/overlay badges
+let lastSearchStats = { depth: 0, seldepth: 0, nps: 0, nodes: 0, hashfull: 0, tbhits: 0 };
 // Manage engine readiness using UCI isready/readyok
 let pendingReadyCallbacks = [];
 let minimalOverlay = false; // when true, show only PV1 in overlay
@@ -119,11 +121,11 @@ async function loadStockfish() {
     let hasThreadsOption = false;
     let seenUciOk = false;
     // Load saved preferences before setting options
-    const { engineLevel = "8", engineThinkMs = 200, engineMultiPV = 1, autoMove = false, autoMoveDelayBaseMs: storedBase = 150, autoMoveDelayJitterMs: storedJitter = 600, eloEnabled: storedEloEnabled = false, eloValue: storedElo = 1600, hashMb: storedHash = 64, ponderEnabled: storedPonder = false, autoMoveConfidencePct: storedConf = 0 } = await new Promise((resolve) => {
+    const { engineLevel = "8", engineThinkMs = 200, engineMultiPV = 1, autoMove = false, autoMoveDelayBaseMs: storedBase = 150, autoMoveDelayJitterMs: storedJitter = 600, eloEnabled: storedEloEnabled = false, eloValue: storedElo = 1600, hashMb: storedHash = 64, ponderEnabled: storedPonder = false, autoMoveConfidencePct: storedConf = 0, moveOverheadMs: storedOverhead = 80, slowMoverPercent: storedSlowMover = 100, threads: storedThreads = 0 } = await new Promise((resolve) => {
         try {
-            chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0 }, (items) => resolve(items));
+            chrome.storage.sync.get({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0, moveOverheadMs: 80, slowMoverPercent: 100, threads: 0 }, (items) => resolve(items));
         } catch (e) {
-            resolve({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0 });
+            resolve({ engineLevel: "8", engineThinkMs: 200, engineMultiPV: 1, autoMove: false, autoMoveDelayBaseMs: 150, autoMoveDelayJitterMs: 600, eloEnabled: false, eloValue: 1600, hashMb: 64, ponderEnabled: false, autoMoveConfidencePct: 0, moveOverheadMs: 80, slowMoverPercent: 100, threads: 0 });
         }
     });
     // Clamp possible stored values to 0..20 range
@@ -134,14 +136,16 @@ async function loadStockfish() {
     autoDelayBaseMs = Math.max(0, Math.min(5000, parseInt(storedBase, 10) || 150));
     autoDelayJitterMs = Math.max(0, Math.min(20000, parseInt(storedJitter, 10) || 600));
     let eloEnabled = Boolean(storedEloEnabled);
-    let eloValue = Math.max(800, Math.min(2800, parseInt(storedElo, 10) || 1600));
+    let eloValue = Math.max(1320, Math.min(3190, parseInt(storedElo, 10) || 1600));
     let hashMb = Math.max(16, Math.min(256, parseInt(storedHash, 10) || 64));
     let ponderEnabled = Boolean(storedPonder);
     let autoMoveConfidencePct = Math.max(0, Math.min(20, parseInt(storedConf, 10) || 0));
+    let moveOverheadMs = Math.max(0, Math.min(5000, parseInt(storedOverhead, 10) || 80));
+    let slowMoverPercent = Math.max(10, Math.min(1000, parseInt(storedSlowMover, 10) || 100));
 
     // Use all logical cores by default on native engine; only apply if supported by engine
     const threadsDefault = Math.max(1, Math.min(32, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 1));
-    let selectedThreads = threadsDefault;
+    let selectedThreads = Math.max(1, Math.min(32, parseInt(storedThreads, 10) || threadsDefault));
 
     const applyAllEngineOptions = () => {
         try {
@@ -159,11 +163,15 @@ async function loadStockfish() {
                 stockfish.postMessage(`setoption name Threads value ${selectedThreads}`);
             }
             stockfish.postMessage(`setoption name Ponder value ${ponderEnabled ? 'true' : 'false'}`);
+            // Time-management safety knobs recommended by SF docs
+            stockfish.postMessage(`setoption name Move Overhead value ${moveOverheadMs}`);
+            stockfish.postMessage(`setoption name Slow Mover value ${slowMoverPercent}`);
         } catch (_) {}
     };
     applyAllEngineOptions();
     console.log('[ChessBot] init settings:', { selectedLevel, selectedThinkMs, selectedMultiPV, autoMoveEnabled, autoDelayBaseMs, autoDelayJitterMs });
 
+    let lastInfoAt = 0;
     stockfish.onmessage = function (event) {
         const moveRaw = String(event.data || '');
         if (moveRaw === 'readyok') {
@@ -186,15 +194,35 @@ async function loadStockfish() {
         }
         // Parse MultiPV info lines: e.g., "info depth 20 seldepth 30 multipv 2 score cp 35 wdl 550 300 150 pv e2e4 e7e5 ..."
         if (moveRaw.startsWith('info')) {
+            const t = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+            // Always process MultiPV-bearing lines; coalesce only non-MultiPV spam
+            const isMultiPVLine = /\bmultipv\b/.test(moveRaw);
+            if (!isMultiPVLine && (t - lastInfoAt < 50)) return;
+            lastInfoAt = t;
             try {
                 const line = moveRaw;
                 const tokens = line.trim().split(/\s+/);
+                // Update search stats for popup
+                const idxDepth = tokens.indexOf('depth');
+                const idxSelDepth = tokens.indexOf('seldepth');
+                const idxNps = tokens.indexOf('nps');
+                const idxNodes = tokens.indexOf('nodes');
+                const idxHashfull = tokens.indexOf('hashfull');
+                const idxTbhits = tokens.indexOf('tbhits');
+                if (idxDepth > -1 && tokens[idxDepth + 1]) lastSearchStats.depth = parseInt(tokens[idxDepth + 1], 10) || lastSearchStats.depth || 0;
+                if (idxSelDepth > -1 && tokens[idxSelDepth + 1]) lastSearchStats.seldepth = parseInt(tokens[idxSelDepth + 1], 10) || lastSearchStats.seldepth || 0;
+                if (idxNps > -1 && tokens[idxNps + 1]) lastSearchStats.nps = parseInt(tokens[idxNps + 1], 10) || lastSearchStats.nps || 0;
+                if (idxNodes > -1 && tokens[idxNodes + 1]) lastSearchStats.nodes = parseInt(tokens[idxNodes + 1], 10) || lastSearchStats.nodes || 0;
+                if (idxHashfull > -1 && tokens[idxHashfull + 1]) lastSearchStats.hashfull = parseInt(tokens[idxHashfull + 1], 10) || lastSearchStats.hashfull || 0;
+                if (idxTbhits > -1 && tokens[idxTbhits + 1]) lastSearchStats.tbhits = parseInt(tokens[idxTbhits + 1], 10) || 0;
+                try { chrome.storage && chrome.storage.local && chrome.storage.local.set({ lastEngineStats: Object.assign({ ts: Date.now() }, lastSearchStats) }); } catch (_) {}
                 const idxMulti = tokens.indexOf('multipv');
                 const idxPv = tokens.indexOf('pv');
                 const idxScore = tokens.indexOf('score');
                 const idxWdl = tokens.indexOf('wdl');
-                if (idxMulti > -1 && idxPv > -1 && idxPv + 1 < tokens.length) {
-                    const pvIndex = parseInt(tokens[idxMulti + 1], 10) || 1;
+                if (idxPv > -1 && idxPv + 1 < tokens.length) {
+                    // If engine doesn't echo 'multipv' for pv1, assume 1
+                    const pvIndex = (idxMulti > -1) ? (parseInt(tokens[idxMulti + 1], 10) || 1) : 1;
                     const pvMoves = tokens.slice(idxPv + 1).filter(t => /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(t));
                     const firstMove = pvMoves && pvMoves.length > 0 ? pvMoves[0] : undefined;
                     let scoreObj = null;
@@ -215,8 +243,9 @@ async function loadStockfish() {
                             wdlObj = { w, d, l, winPct };
                         }
                     }
-                    if (firstMove && firstMove.length >= 4) {
-                        latestMultiPVLines[pvIndex - 1] = { idx: pvIndex, move: firstMove, moves: pvMoves, score: scoreObj, wdl: wdlObj };
+                    if (firstMove && firstMove.length >= 4 && pvIndex >= 1 && pvIndex <= Math.max(1, selectedMultiPV)) {
+                        const tbFlag = (lastSearchStats && typeof lastSearchStats.tbhits === 'number' && lastSearchStats.tbhits > 0);
+                        latestMultiPVLines[pvIndex - 1] = { idx: pvIndex, move: firstMove, moves: pvMoves, score: scoreObj, wdl: wdlObj, tb: tbFlag };
                         drawMultiPVArrows();
                     }
                 }
@@ -398,7 +427,7 @@ function drawPonderMove(pondermove){
 function drawMultiPVArrows() {
     // Clear then draw arrows for up to selectedMultiPV lines using distinct colors
     const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    if (now - lastDrawAt < 40) { return; }
+    if (now - lastDrawAt < 120) { return; }
     lastDrawAt = now;
     try { $("#canvas").clearCanvas(); } catch (e) {}
     const colors = [
@@ -502,6 +531,10 @@ function drawMultiPVArrows() {
                 if (entry.wdl && typeof entry.wdl.winPct === 'number') {
                     if (label) label += ' · ';
                     label += String(entry.wdl.winPct) + '%';
+                }
+                // Mark tablebase hits if present
+                if ((lastSearchStats && lastSearchStats.tbhits > 0) || (entry && entry.tb)) {
+                    if (label) label += ' · TB'; else label = 'TB';
                 }
                 if (label && (i === 0 || !minimalOverlay)) {
                     $("#canvas").drawText({
@@ -641,6 +674,14 @@ function tryAutoMove(uciMove) {
     const active = getActiveColorFromFEN(lastFen);
     if (active !== lastPlayingAs) return;
 
+    // Ensure latestMultiPVLines[0] matches the bestmove we're about to play (prevents stale auto moves)
+    if (!latestMultiPVLines || !latestMultiPVLines[0] || typeof latestMultiPVLines[0].move !== 'string') {
+        return;
+    }
+    if (latestMultiPVLines[0].move.toLowerCase() !== String(uciMove).toLowerCase()) {
+        return;
+    }
+
     const base = Math.max(0, Number(autoDelayBaseMs) || 0);
     const margin = Math.max(0, Number(autoDelayJitterMs) || 0);
     const delay = base + Math.floor(Math.random() * (margin + 1));
@@ -695,7 +736,7 @@ function getFenSquarePiece(fen, square) {
 
 function processFEN(fen) {
     // Cancel any ongoing search before starting a new one
-    try { stockfish.postMessage('stop'); } catch (e) { console.warn('[ChessBot] Failed to send "stop" to stockfish:', e); }
+    try { stockfish.postMessage('stop'); } catch (e) { /* ignore */ }
 
     // It's a new position, so clear the auto-move lock
     lastAutoMovedFen = null;
@@ -746,12 +787,14 @@ function processFEN(fen) {
                         const binc = typeof c.binc === 'number' ? c.binc : 0;
                         stockfish.postMessage(`go wtime ${c.wtime} btime ${c.btime} winc ${winc} binc ${binc}`);
                     } else {
-                        stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+                        const best = (latestMultiPVLines && latestMultiPVLines[0] && latestMultiPVLines[0].move) ? latestMultiPVLines[0].move : null;
+                        if (best) stockfish.postMessage(`go searchmoves ${best} movetime ${selectedThinkMs}`);
+                        else stockfish.postMessage(`go movetime ${selectedThinkMs}`);
                     }
                 } catch (_) {}
             });
         } catch (_) {}
-    }, Math.min(8000, Math.max(1000 + Number(selectedThinkMs) || 200, Number(selectedThinkMs) + 1200)));
+    }, Math.min(6000, Math.max(800 + (Number(selectedThinkMs) || 200), (Number(selectedThinkMs) + 800 || 1000))));
 }
 
 /**
@@ -834,6 +877,92 @@ let lastPlayingAs = null; // Track previous player color
 let lastClocks = { ok: false };
 let lastPredictedPonderMove = null;
 let isPondering = false;
+
+// --- Non-blocking calibration: run speedtest in a short-lived background connection ---
+async function runCalibrationInIsolatedEngine() {
+    try {
+        // Use the same WS URL as main engine
+        let targetUrl = 'ws://127.0.0.1:8181';
+        try {
+            const obj = await new Promise((resolve) => {
+                try { chrome.storage.sync.get({ engineWsUrl: targetUrl }, (items) => resolve(items)); }
+                catch (_) { resolve({ engineWsUrl: targetUrl }); }
+            });
+            if (obj && typeof obj.engineWsUrl === 'string') targetUrl = obj.engineWsUrl;
+        } catch (_) {}
+
+        const aux = createWebSocketEngine(targetUrl);
+        let done = false;
+        let output = [];
+        let threadsUsed = null;
+        let parsedNps = null;
+        const finish = () => {
+            if (done) return; done = true;
+            try { aux.terminate(); } catch (_) {}
+            // Simple hash suggestion from NPS
+            let suggestedHashMb = null;
+            if (typeof parsedNps === 'number') {
+                if (parsedNps >= 8_000_000) suggestedHashMb = 256;
+                else if (parsedNps >= 3_000_000) suggestedHashMb = 128;
+                else suggestedHashMb = 64;
+            }
+            try {
+                chrome.storage.local.set({
+                    calibrationOutput: output.join('\n'),
+                    calibrationSummary: {
+                        nps: parsedNps,
+                        threads: threadsUsed,
+                        suggestedHashMb,
+                        ts: Date.now(),
+                    }
+                });
+            } catch (_) {}
+        };
+        aux.onmessage = (ev) => {
+            const line = String(ev.data || '').trim();
+            if (!line) return;
+            // Collect some lines, but avoid unbounded growth
+            if (output.length < 200) output.push(line);
+            const usingMatch = line.match(/Using\s+(\d+)\s+threads/i);
+            if (usingMatch) {
+                const t = parseInt(usingMatch[1], 10);
+                if (!Number.isNaN(t)) threadsUsed = t;
+            }
+            if (line === 'readyok') {
+                // Kick off speedtest after ready
+                try { aux.postMessage('speedtest'); } catch (_) {}
+            }
+            if (line === 'uciok') {
+                try {
+                    // Mirror critical options that might influence speedtest
+                    chrome.storage.sync.get({ hashMb: 64, threads: 0 }, (items) => {
+                        const hw = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 1;
+                        const th = Math.max(1, Math.min(32, parseInt(items.threads, 10) || hw));
+                        try { aux.postMessage(`setoption name Hash value ${Math.max(16, Math.min(256, parseInt(items.hashMb, 10) || 64))}`); } catch (_) {}
+                        try { aux.postMessage(`setoption name Threads value ${th}`); } catch (_) {}
+                        // Now ask for isready to sync, then speedtest will run on readyok handler
+                        try { aux.postMessage('isready'); } catch (_) {}
+                    });
+                } catch (_) {}
+            }
+            const npsMatch = line.match(/Nodes\s*[/ ]\s*second\s*[:=]\s*([0-9.,]+)/i);
+            if (npsMatch && !parsedNps) {
+                const val = parseFloat(npsMatch[1].replace(/,/g, ''));
+                if (!Number.isNaN(val)) parsedNps = Math.round(val);
+            }
+            if (/Total time for .* nodes/.test(line) || /Nodes searched/.test(line) || /Speed test finished/i.test(line)) {
+                // Heuristic end of speedtest output
+                finish();
+            }
+        };
+        aux.onerror = finish;
+        aux.onmessageerror = finish;
+        // Start UCI handshake
+        try { aux.postMessage('uci'); } catch (_) {}
+        // Force timeout safety in case engine never replies
+        setTimeout(finish, 15000);
+    } catch (_) {}
+}
 
 window.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'GET_INIT_GAME_INFO') {
@@ -931,10 +1060,23 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         selectedMultiPV = mpv;
         console.log("Updating Stockfish MultiPV to:", selectedMultiPV);
         try { stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`); } catch (_) {}
-        if (lastFen) {
-            const active = getActiveColorFromFEN(lastFen);
-            if (active == lastPlayingAs) { processFEN(lastFen); }
-        }
+        // Force a fresh search to populate all PVs immediately
+        if (lastFen) processFEN(lastFen);
+    }
+    if (request.type === 'set-threads') {
+        const th = Math.max(1, Math.min(32, parseInt(request.value, 10) || 1));
+        try { stockfish.postMessage(`setoption name Threads value ${th}`); } catch (_) {}
+    }
+    if (request.type === 'set-time-mgmt') {
+        const ov = Math.max(0, Math.min(5000, parseInt(request.overhead, 10) || 80));
+        const sm = Math.max(10, Math.min(1000, parseInt(request.slowmover, 10) || 100));
+        try {
+            stockfish.postMessage(`setoption name Move Overhead value ${ov}`);
+            stockfish.postMessage(`setoption name Slow Mover value ${sm}`);
+        } catch (_) {}
+    }
+    if (request.type === 'run-calibrate') {
+        try { runCalibrationInIsolatedEngine(); } catch (_) {}
     }
     if (request.type === 'set-minimal-overlay') {
         minimalOverlay = Boolean(request.enabled);
@@ -946,7 +1088,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
             try {
                 stockfish.postMessage(`setoption name UCI_LimitStrength value ${enabled ? 'true' : 'false'}`);
                 if (enabled) {
-                    const e = Math.max(800, Math.min(2800, parseInt(items.eloValue, 10) || 1600));
+                    const e = Math.max(1320, Math.min(3190, parseInt(items.eloValue, 10) || 1600));
                     stockfish.postMessage(`setoption name UCI_Elo value ${e}`);
                 } else {
                     stockfish.postMessage(`setoption name Skill Level value ${selectedLevel}`);
@@ -959,7 +1101,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         }
     }
     if (request.type === 'set-elo') {
-        const elo = Math.max(800, Math.min(2800, parseInt(request.value, 10) || 1600));
+        const elo = Math.max(1320, Math.min(3190, parseInt(request.value, 10) || 1600));
         try {
             stockfish.postMessage(`setoption name UCI_Elo value ${elo}`);
         } catch (_) {}
@@ -978,6 +1120,10 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     }
     if (request.type === 'set-autoplay-confidence') {
         autoMoveConfidencePct = Math.max(0, Math.min(20, parseInt(request.value, 10) || 0));
+    }
+    if (request.type === 'set-minimal-overlay') {
+        minimalOverlay = Boolean(request.enabled);
+        try { drawMultiPVArrows(); } catch (_) {}
     }
 });
 
