@@ -23,6 +23,18 @@ let lastDrawAt = 0; // throttle PV arrow draws
 let currentSearchToken = 0; // watchdog token for engine searches
 let bestmoveTimerId = null; // watchdog timer id
 let boardResizeObserver = null; // keep canvas aligned with board
+// Manage engine readiness using UCI isready/readyok
+let pendingReadyCallbacks = [];
+function runWhenEngineReady(callback) {
+    try {
+        if (typeof callback === 'function') {
+            pendingReadyCallbacks.push(callback);
+        }
+        if (stockfish) {
+            stockfish.postMessage('isready');
+        }
+    } catch (_) {}
+}
 async function loadStockfish() {
     // Charger le fichier Stockfish.js en tant que texte
     const response = await fetch(chrome.runtime.getURL('lib/stockfish.js'));
@@ -57,6 +69,13 @@ async function loadStockfish() {
 
     stockfish.onmessage = function (event) {
         const moveRaw = String(event.data || '');
+        if (moveRaw === 'readyok') {
+            try {
+                const cbs = pendingReadyCallbacks.splice(0, pendingReadyCallbacks.length);
+                for (const cb of cbs) { try { cb(); } catch (_) {} }
+            } catch (_) {}
+            return;
+        }
         // Parse MultiPV info lines: e.g., "info depth 20 seldepth 30 multipv 2 score cp 35 pv e2e4 e7e5 ..."
         if (moveRaw.startsWith('info')) {
             try {
@@ -399,12 +418,15 @@ function processFEN(fen) {
     // It's a new position, so clear the auto-move lock
     lastAutoMovedFen = null;
 
-    stockfish.postMessage('position fen ' + fen);
-    // Use selected think time for search
-    // Reset cached PVs for this position
-    latestMultiPVLines = new Array(Math.max(1, selectedMultiPV));
-    stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
-    stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+    const startSearch = () => {
+        stockfish.postMessage('position fen ' + fen);
+        // Use selected think time for search
+        // Reset cached PVs for this position
+        latestMultiPVLines = new Array(Math.max(1, selectedMultiPV));
+        stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
+        stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+    };
+    runWhenEngineReady(startSearch);
 
     // Watchdog: ensure we eventually get a bestmove; otherwise, retry this search
     function clearBestmoveWatchdog() {
@@ -421,9 +443,13 @@ function processFEN(fen) {
         try {
             console.warn('[ChessBot] bestmove watchdog triggered; retrying search');
             stockfish.postMessage('stop');
-            stockfish.postMessage('position fen ' + lastFen);
-            stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
-            stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+            runWhenEngineReady(() => {
+                try {
+                    stockfish.postMessage('position fen ' + lastFen);
+                    stockfish.postMessage(`setoption name MultiPV value ${selectedMultiPV}`);
+                    stockfish.postMessage(`go movetime ${selectedThinkMs}`);
+                } catch (_) {}
+            });
         } catch (_) {}
     }, Math.min(8000, Math.max(1000 + Number(selectedThinkMs) || 200, Number(selectedThinkMs) + 1200)));
 }
@@ -483,6 +509,14 @@ function reinitializeBoard(gameInfo) {
         if (document.getElementById("canvas")) {
             document.getElementById("canvas").remove();
         }
+
+        // Notify engine of a new game and clear hash for fresh searches
+        try {
+            if (stockfish) {
+                stockfish.postMessage('ucinewgame');
+                stockfish.postMessage('setoption name Clear Hash value true');
+            }
+        } catch (_) {}
 
         // **Reinitialize the board based on color**
         if (gameInfo.playingAs === 1) {
