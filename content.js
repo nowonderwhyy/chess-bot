@@ -9,7 +9,7 @@ var rank = ["a", "b", "c", "d", "e", "f", "g", "h"];
 var rankBlack = ["h", "g", "f", "e", "d", "c", "b", "a"];
 var point = {};
 
-let stockfish = null; // can be a Web Worker (wasm) or a WebSocket wrapper
+let stockfish = null; // WebSocket client wrapper for native Stockfish
 let selectedLevel = "8";
 let selectedThinkMs = 200; // default 200ms
 let autoMoveEnabled = false;
@@ -51,7 +51,6 @@ function createWebSocketEngine(url) {
     let isOpen = false;
     let onmessage = null;
     let onerror = null;
-    let onmessageerror = null;
 
     function flushQueue() {
         try {
@@ -101,8 +100,7 @@ function createWebSocketEngine(url) {
         get onmessage() { return onmessage; },
         set onerror(fn) { onerror = fn; },
         get onerror() { return onerror; },
-        set onmessageerror(fn) { onmessageerror = fn; },
-        get onmessageerror() { return onmessageerror; },
+        
     };
 }
 
@@ -323,9 +321,7 @@ async function loadStockfish() {
     }
     try {
         stockfish.addEventListener && stockfish.addEventListener('error', restartEngineSafely);
-        stockfish.addEventListener && stockfish.addEventListener('messageerror', restartEngineSafely);
         stockfish.onerror = restartEngineSafely;
-        stockfish.onmessageerror = restartEngineSafely;
     } catch (_) {}
 
     return stockfish;
@@ -955,7 +951,6 @@ async function runCalibrationInIsolatedEngine() {
             }
         };
         aux.onerror = finish;
-        aux.onmessageerror = finish;
         // Start UCI handshake
         try { aux.postMessage('uci'); } catch (_) {}
         // Force timeout safety in case engine never replies
